@@ -1,0 +1,544 @@
+// Copyright 2015 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+////////////////////////////////////////////////////////////////////////////////
+
+#include "src/piex.h"
+
+#include <cstdint>
+#include <set>
+#include <vector>
+
+#include "src/binary_parse/range_checked_byte_ptr.h"
+#include "src/image_type_recognition/image_type_recognition_lite.h"
+#include "src/tiff_parser.h"
+
+namespace piex {
+namespace {
+
+using binary_parse::RangeCheckedBytePtr;
+using image_type_recognition::RawImageTypes;
+using image_type_recognition::RecognizeRawImageTypeLite;
+using tiff_directory::Endian;
+using tiff_directory::TiffDirectory;
+
+Error GetPreviewData(const TagSet& extended_tags,
+                     const std::uint32_t tiff_offset,
+                     const std::uint32_t number_of_ifds,
+                     StreamInterface* stream, TiffContent* tiff_content,
+                     PreviewImageData* preview_image_data) {
+  TagSet desired_tags = {kExifTagColorSpace,   kExifTagDateTimeOriginal,
+                         kExifTagExposureTime, kExifTagFnumber,
+                         kExifTagFocalLength,  kExifTagGps,
+                         kExifTagIsoSpeed,     kTiffTagDateTime,
+                         kTiffTagExifIfd,      kTiffTagMake,
+                         kTiffTagModel,        kTiffTagOrientation};
+  desired_tags.insert(extended_tags.cbegin(), extended_tags.cend());
+
+  TiffParser tiff_parser(stream, tiff_offset);
+  Error error = tiff_parser.Parse(desired_tags, number_of_ifds, tiff_content);
+  if (error != kOk) {
+    return error;
+  }
+  if (tiff_content->tiff_directory.empty()) {
+    // Returns kFail if the stream does not contain any TIFF structure.
+    return kFail;
+  }
+  return tiff_parser.GetPreviewImageData(*tiff_content, preview_image_data);
+}
+
+Error GetPreviewData(const TagSet& extended_tags,
+                     const std::uint32_t number_of_ifds,
+                     StreamInterface* stream,
+                     PreviewImageData* preview_image_data) {
+  const std::uint32_t kTiffOffset = 0;
+  TiffContent tiff_content;
+  return GetPreviewData(extended_tags, kTiffOffset, number_of_ifds, stream,
+                        &tiff_content, preview_image_data);
+}
+
+Error GetExifData(const std::uint32_t exif_offset, StreamInterface* stream,
+                  PreviewImageData* preview_image_data) {
+  const TagSet kExtendedTags = {kTiffTagImageWidth, kTiffTagImageLength};
+  const std::uint32_t kNumberOfIfds = 1;
+  TiffContent tiff_content;
+  return GetPreviewData(kExtendedTags, exif_offset, kNumberOfIfds, stream,
+                        &tiff_content, preview_image_data);
+}
+
+Error GetExifIfd(const Endian endian, StreamInterface* stream,
+                 TiffDirectory* exif_ifd) {
+  const std::uint32_t kTiffOffset = 0;
+  std::uint32_t offset_to_ifd;
+  if (!Get32u(stream, sizeof(offset_to_ifd), endian, &offset_to_ifd)) {
+    return kFail;
+  }
+
+  std::uint32_t next_ifd_offset;
+  TiffDirectory tiff_ifd(endian);
+  Error error =
+      ParseDirectory(kTiffOffset, offset_to_ifd, endian, {kTiffTagExifIfd},
+                     stream, &tiff_ifd, &next_ifd_offset);
+  if (error != kOk) {
+    return error;
+  }
+
+  std::uint32_t exif_offset;
+  if (!tiff_ifd.Get(kTiffTagExifIfd, &exif_offset)) {
+    return kUnsupported;
+  }
+
+  return ParseDirectory(kTiffOffset, exif_offset, endian, {kExifTagMakernotes},
+                        stream, exif_ifd, &next_ifd_offset);
+}
+
+Error GetMakernoteIfd(const TiffDirectory& exif_ifd, const Endian endian,
+                      StreamInterface* stream, std::uint32_t* makernote_offset,
+                      TiffDirectory* makernote_ifd) {
+  std::uint32_t makernote_length;
+  if (!exif_ifd.GetOffsetAndLength(kExifTagMakernotes,
+                                   tiff_directory::TIFF_TYPE_UNDEFINED,
+                                   makernote_offset, &makernote_length)) {
+    return kUnsupported;
+  }
+
+  std::uint32_t next_ifd_offset;
+  return ParseDirectory(*makernote_offset, *makernote_offset + 12, endian,
+                        {kOlymTagCameraSettings, kOlymTagRawProcessing}, stream,
+                        makernote_ifd, &next_ifd_offset);
+}
+
+Error GetCameraSettingsIfd(const TiffDirectory& makernote_ifd,
+                           const std::uint32_t makernote_offset,
+                           const Endian endian, StreamInterface* stream,
+                           TiffDirectory* camera_settings_ifd) {
+  std::uint32_t camera_settings_offset;
+  std::uint32_t camera_settings_length;
+  if (!makernote_ifd.GetOffsetAndLength(
+          kOlymTagCameraSettings, tiff_directory::TIFF_IFD,
+          &camera_settings_offset, &camera_settings_length)) {
+    return kUnsupported;
+  }
+
+  std::uint32_t next_ifd_offset;
+  if (!Get32u(stream, camera_settings_offset, endian,
+              &camera_settings_offset)) {
+    return kFail;
+  }
+  return ParseDirectory(makernote_offset,
+                        makernote_offset + camera_settings_offset, endian,
+                        {kTiffTagBitsPerSample, kTiffTagImageLength}, stream,
+                        camera_settings_ifd, &next_ifd_offset);
+}
+
+Error GetRawProcessingIfd(const TagSet& desired_tags,
+                          const TiffDirectory& makernote_ifd,
+                          const std::uint32_t makernote_offset,
+                          const Endian endian, StreamInterface* stream,
+                          TiffDirectory* raw_processing_ifd) {
+  std::uint32_t raw_processing_offset;
+  std::uint32_t raw_processing_length;
+  if (!makernote_ifd.GetOffsetAndLength(
+          kOlymTagRawProcessing, tiff_directory::TIFF_IFD,
+          &raw_processing_offset, &raw_processing_length)) {
+    return kUnsupported;
+  }
+
+  std::uint32_t next_ifd_offset;
+  if (!Get32u(stream, raw_processing_offset, endian, &raw_processing_offset)) {
+    return kFail;
+  }
+
+  return ParseDirectory(
+      makernote_offset, makernote_offset + raw_processing_offset, endian,
+      desired_tags, stream, raw_processing_ifd, &next_ifd_offset);
+}
+
+// Retrieves the preview image offset and length from the camera settings and
+// the 'full_width' and 'full_height' from the raw processing ifd in 'stream'.
+// Returns kUnsupported if the camera settings are missing, since it is not able
+// to get the preview data.
+Error GetOlympusPreviewImage(StreamInterface* stream,
+                             PreviewImageData* preview_image_data) {
+  Endian endian;
+  if (!GetEndianness(0 /* tiff offset */, stream, &endian)) {
+    return kFail;
+  }
+
+  TiffDirectory exif_ifd(endian);
+  Error error = GetExifIfd(endian, stream, &exif_ifd);
+  if (error != kOk) {
+    return error;
+  }
+
+  std::uint32_t makernote_offset;
+  TiffDirectory makernote_ifd(endian);
+  error = GetMakernoteIfd(exif_ifd, endian, stream, &makernote_offset,
+                          &makernote_ifd);
+  if (error != kOk) {
+    return error;
+  }
+
+  TiffDirectory camera_settings_ifd(endian);
+  error = GetCameraSettingsIfd(makernote_ifd, makernote_offset, endian, stream,
+                               &camera_settings_ifd);
+  if (error != kOk) {
+    return error;
+  }
+
+  const std::uint32_t kPreviewOffset = 0x0101;
+  const std::uint32_t kPreviewLength = 0x0102;
+  if (!camera_settings_ifd.Has(kPreviewOffset) ||
+      !camera_settings_ifd.Has(kPreviewLength)) {
+    return kUnsupported;
+  }
+
+  camera_settings_ifd.Get(kPreviewOffset, &preview_image_data->jpeg_offset);
+  preview_image_data->jpeg_offset += makernote_offset;
+  camera_settings_ifd.Get(kPreviewLength, &preview_image_data->jpeg_length);
+
+  // Get the crop size from the raw processing ifd.
+  TiffDirectory raw_processing_ifd(endian);
+  error = GetRawProcessingIfd({kOlymTagAspectFrame}, makernote_ifd,
+                              makernote_offset, endian, stream,
+                              &raw_processing_ifd);
+  if (error != kOk) {
+    return error;
+  }
+
+  if (raw_processing_ifd.Has(kOlymTagAspectFrame)) {
+    std::vector<std::uint32_t> aspect_frame(4);
+    if (raw_processing_ifd.Get(kOlymTagAspectFrame, &aspect_frame) &&
+        aspect_frame[2] > aspect_frame[0] &&
+        aspect_frame[3] > aspect_frame[1]) {
+      preview_image_data->full_width = aspect_frame[2] - aspect_frame[0] + 1;
+      preview_image_data->full_height = aspect_frame[3] - aspect_frame[1] + 1;
+      if (preview_image_data->full_width < preview_image_data->full_height) {
+        std::swap(preview_image_data->full_width,
+                  preview_image_data->full_height);
+      }
+    }
+  }
+
+  return kOk;
+}
+
+// Parses the Fuji Cfa header for the image width and height.
+bool RafGetDimension(StreamInterface* stream, std::uint32_t* width,
+                     std::uint32_t* height) {
+  const Endian endian = tiff_directory::kBigEndian;
+  std::uint32_t cfa_header_index = 0;  // actual position in the cfa header.
+  std::uint32_t cfa_header_entries = 0;
+  if (!Get32u(stream, 92 /* cfa header offset */, endian, &cfa_header_index) ||
+      !Get32u(stream, cfa_header_index, endian, &cfa_header_entries)) {
+    return false;
+  }
+
+  // Add 4 to point to the actual read position in the cfa header.
+  cfa_header_index += 4;
+
+  for (std::uint32_t i = 0; i < cfa_header_entries; ++i) {
+    std::uint16_t id = 0;
+    std::uint16_t length = 0;
+    if (!Get16u(stream, cfa_header_index, endian, &id) ||
+        !Get16u(stream, cfa_header_index + 2, endian, &length)) {
+      return false;
+    }
+
+    std::uint16_t tmp_width = 0;
+    std::uint16_t tmp_height = 0;
+    if (id == 0x0111 /* tags the crop dimensions */ &&
+        Get16u(stream, cfa_header_index + 4, endian, &tmp_height) &&
+        Get16u(stream, cfa_header_index + 6, endian, &tmp_width)) {
+      *width = tmp_width;
+      *height = tmp_height;
+      return true;
+    }
+    cfa_header_index += 4 + length;
+  }
+  return false;
+}
+
+Error ArwGetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  const TagSet extended_tags = {kExifTagHeight, kExifTagWidth,
+                                kTiffTagJpegByteCount, kTiffTagJpegOffset,
+                                kTiffTagSubIfd};
+  // This camera maker doesn't embed a full jpeg.
+  preview_image_data->full_preview = false;
+  const std::uint32_t kNumberOfIfds = 1;
+  return GetPreviewData(extended_tags, kNumberOfIfds, stream,
+                        preview_image_data);
+}
+
+Error Cr2GetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  const TagSet extended_tags = {kExifTagHeight, kExifTagWidth,
+                                kTiffTagStripByteCounts, kTiffTagStripOffsets};
+  // This camera maker embeds at least a full sized jpeg.
+  preview_image_data->full_preview = true;
+  const std::uint32_t kNumberOfIfds = 1;
+  return GetPreviewData(extended_tags, kNumberOfIfds, stream,
+                        preview_image_data);
+}
+
+Error DngGetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  const TagSet extended_tags = {
+      kExifTagDefaultCropSize, kTiffTagCompression,  kTiffTagPhotometric,
+      kTiffTagStripByteCounts, kTiffTagStripOffsets, kTiffTagSubIfd};
+
+  TiffContent tiff_content;
+  const std::uint32_t kNumberOfIfds = 4;
+  Error error = GetPreviewData(extended_tags, 0, kNumberOfIfds, stream,
+                               &tiff_content, preview_image_data);
+  if (error != kOk) {
+    return error;
+  }
+
+  // Find the largest jpeg compressed preview image.
+  std::uint32_t jpeg_length = 0;
+  for (const auto& ifd : tiff_content.tiff_directory[0].GetSubDirectories()) {
+    std::uint32_t compression;
+    std::uint32_t photometric_interpretation;
+    if (!ifd.Get(kTiffTagPhotometric, &photometric_interpretation) ||
+        !ifd.Get(kTiffTagCompression, &compression)) {
+      continue;
+    }
+    if (photometric_interpretation == 6 /* YCbCr */ &&
+        (compression == 6 /* JPEG(old) */ || compression == 7 /* JPEG */)) {
+      std::vector<std::uint32_t> strip_offsets;
+      std::vector<std::uint32_t> byte_counts;
+      if (ifd.Get(kTiffTagStripOffsets, &strip_offsets) &&
+          ifd.Get(kTiffTagStripByteCounts, &byte_counts) &&
+          strip_offsets.size() == 1 && byte_counts.size() == 1 &&
+          byte_counts[0] > jpeg_length) {
+        jpeg_length = byte_counts[0];
+        preview_image_data->jpeg_length = jpeg_length;
+        preview_image_data->jpeg_offset = strip_offsets[0];
+      }
+    }
+  }
+
+  // A 'jpeg_length' of 0 indicates that we could not find any jpeg preview.
+  if (jpeg_length == 0) {
+    return kUnsupported;
+  }
+
+  // This format doesn't necessarily embed a full jpeg.
+  preview_image_data->full_preview = false;
+
+  return kOk;
+}
+
+Error NefGetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  const TagSet extended_tags = {kTiffTagImageWidth, kTiffTagImageLength,
+                                kTiffTagJpegByteCount, kTiffTagJpegOffset,
+                                kTiffTagSubIfd};
+  // This camera maker embeds a full jpeg.
+  preview_image_data->full_preview = true;
+  const std::uint32_t kNumberOfIfds = 2;
+  Error error =
+      GetPreviewData(extended_tags, kNumberOfIfds, stream, preview_image_data);
+  if (error != kOk) {
+    return error;
+  }
+
+  // The Nikon RAW data provides the dimensions of the sensor image, which are
+  // slightly larger than the dimensions of the preview image. In order to
+  // determine the correct full width and height of the image, the preview image
+  // size needs to be taken into account. Based on experiments the preview image
+  // dimensions must be at least 90% of the sensor image dimensions to let it be
+  // a full size preview image.
+  const float kEpsilon = 0.9f;
+
+  std::uint16_t width;
+  std::uint16_t height;
+  if (!GetPreviewDimensions(preview_image_data->jpeg_offset, stream, &width,
+                            &height) ||
+      preview_image_data->full_width == 0 ||
+      preview_image_data->full_height == 0) {
+    return kUnsupported;
+  }
+
+  if (static_cast<float>(width) /
+              static_cast<float>(preview_image_data->full_width) >
+          kEpsilon ||
+      static_cast<float>(height) /
+              static_cast<float>(preview_image_data->full_height) >
+          kEpsilon) {
+    preview_image_data->full_width = width;
+    preview_image_data->full_height = height;
+  }
+  return kOk;
+}
+
+Error OrfGetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  // This camera maker embeds a full jpeg.
+  preview_image_data->full_preview = true;
+
+  // Omit kUnsupported, because the exif data does not contain any preview
+  // image.
+  if (GetExifData(0, stream, preview_image_data) == kFail) {
+    return kFail;
+  }
+
+  return GetOlympusPreviewImage(stream, preview_image_data);
+}
+
+Error RafGetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  // Parse the Fuji RAW header to get the offset and length of the preview
+  // image, which contains the Exif information.
+  const Endian endian = tiff_directory::kBigEndian;
+  std::uint32_t jpeg_offset = 0;
+  std::uint32_t jpeg_length = 0;
+  if (!Get32u(stream, 84 /* jpeg offset */, endian, &jpeg_offset) ||
+      !Get32u(stream, 88 /* jpeg length */, endian, &jpeg_length)) {
+    return kFail;
+  }
+
+  if (!RafGetDimension(stream, &preview_image_data->full_width,
+                       &preview_image_data->full_height)) {
+    return kFail;
+  }
+
+  // Parse the Exif information from the preview image. Omit kUnsupported,
+  // because the exif data does not contain any preview image.
+  const std::uint32_t exif_offset = jpeg_offset + 12;
+  if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
+    return kFail;
+  }
+
+  // Merge the Exif data with the RAW data to form the preview_image_data.
+  preview_image_data->jpeg_offset = jpeg_offset;
+  preview_image_data->jpeg_length = jpeg_length;
+
+  // This camera maker doesn't embed a full jpeg.
+  preview_image_data->full_preview = false;
+
+  return kOk;
+}
+
+Error Rw2GetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  const TagSet extended_tags = {kPanaTagTopBorder,     kPanaTagLeftBorder,
+                                kPanaTagBottomBorder,  kPanaTagRightBorder,
+                                kPanaTagIso,           kPanaTagJpegImage,
+                                kTiffTagJpegByteCount, kTiffTagJpegOffset};
+
+  // This camera maker embeds not a full jpeg.
+  preview_image_data->full_preview = false;
+
+  // Parse the RAW data to get the ISO, offset and length of the preview image,
+  // which contains the Exif information.
+  const std::uint32_t kNumberOfIfds = 1;
+  PreviewImageData preview_data;
+  Error error =
+      GetPreviewData(extended_tags, kNumberOfIfds, stream, &preview_data);
+  if (error != kOk) {
+    return error;
+  }
+
+  // Parse the Exif information from the preview image. Omit kUnsupported,
+  // because the exif data does not contain any preview image.
+  const std::uint32_t exif_offset = preview_data.jpeg_offset + 12;
+  if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
+    return kFail;
+  }
+
+  // Merge the Exif data with the RAW data to form the preview_image_data.
+  preview_image_data->jpeg_offset = preview_data.jpeg_offset;
+  preview_image_data->jpeg_length = preview_data.jpeg_length;
+  preview_image_data->iso = preview_data.iso;
+  preview_image_data->full_width = preview_data.full_width;
+  preview_image_data->full_height = preview_data.full_height;
+
+  return kOk;
+}
+
+}  // namespace
+
+size_t BytesRequiredForIsRaw() {
+  return image_type_recognition::GetNumberOfBytesForIsRawLite();
+}
+
+bool IsRaw(StreamInterface* data) {
+  const size_t bytes = BytesRequiredForIsRaw();
+  if (data == nullptr) {
+    return false;
+  }
+
+  // Read required number of bytes into a vector.
+  std::vector<std::uint8_t> file_header(bytes);
+  if (data->GetData(0, file_header.size(), file_header.data()) != kOk) {
+    return false;
+  }
+
+  RangeCheckedBytePtr data_buffer(file_header.data(), file_header.size());
+
+  return image_type_recognition::IsRawLite(data_buffer);
+}
+
+Error GetPreviewImageData(StreamInterface* data,
+                          PreviewImageData* preview_image_data) {
+  const size_t bytes = BytesRequiredForIsRaw();
+  if (data == nullptr || bytes == 0) {
+    return kFail;
+  }
+
+  std::vector<std::uint8_t> file_header(bytes);
+  Error error = data->GetData(0, file_header.size(), file_header.data());
+  if (error != kOk) {
+    return error;
+  }
+  RangeCheckedBytePtr header_buffer(file_header.data(), file_header.size());
+
+  switch (RecognizeRawImageTypeLite(header_buffer)) {
+    case image_type_recognition::kArwImage:
+      return ArwGetPreviewData(data, preview_image_data);
+    case image_type_recognition::kCr2Image:
+      return Cr2GetPreviewData(data, preview_image_data);
+    case image_type_recognition::kDngImage:
+      return DngGetPreviewData(data, preview_image_data);
+    case image_type_recognition::kNefImage:
+    case image_type_recognition::kNrwImage:
+      return NefGetPreviewData(data, preview_image_data);
+    case image_type_recognition::kOrfImage:
+      return OrfGetPreviewData(data, preview_image_data);
+    case image_type_recognition::kRafImage:
+      return RafGetPreviewData(data, preview_image_data);
+    case image_type_recognition::kRw2Image:
+      return Rw2GetPreviewData(data, preview_image_data);
+    default:
+      return kUnsupported;
+  }
+}
+
+std::vector<std::string> SupportedExtensions() {
+  std::vector<std::string> extensions;
+  extensions.push_back("ARW");
+  extensions.push_back("CR2");
+  extensions.push_back("DNG");
+  extensions.push_back("NEF");
+  extensions.push_back("NRW");
+  extensions.push_back("ORF");
+  extensions.push_back("RAF");
+  extensions.push_back("RW2");
+  return extensions;
+}
+
+}  // namespace piex
