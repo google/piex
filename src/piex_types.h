@@ -51,6 +51,9 @@ struct PreviewImageData {
     Rational longitude[3];
     bool altitude_ref = false;  // true is above, false below sea level
     Rational altitude;
+
+    Rational time_stamp[3];  // Giving hour, minute and second.
+    std::string date_stamp;  // Giving as "YYYY:MM:DD" format.
   };
 
   // Required data to find the preview image and to handle it correctly.

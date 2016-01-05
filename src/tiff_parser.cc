@@ -105,24 +105,43 @@ void FillGpsPreviewImageData(const TiffDirectory& gps_directory,
   if (gps_directory.Has(kGpsTagLatitudeRef) &&
       gps_directory.Has(kGpsTagLatitude) &&
       gps_directory.Has(kGpsTagLongitudeRef) &&
-      gps_directory.Has(kGpsTagLongitude)) {
+      gps_directory.Has(kGpsTagLongitude) &&
+      gps_directory.Has(kGpsTagTimeStamp) &&
+      gps_directory.Has(kGpsTagDateStamp)) {
     preview_image_data->gps.is_valid = false;
     std::string value;
     if (!gps_directory.Get(kGpsTagLatitudeRef, &value) || value.empty() ||
         (value[0] != 'N' && value[0] != 'S') ||
-        !GetRational(kGpsTagLatitude, gps_directory, 3,
-                     &preview_image_data->gps.latitude[0])) {
+        !GetRational(kGpsTagLatitude, gps_directory, 3 /* data size */,
+                     preview_image_data->gps.latitude)) {
       return;
     }
     preview_image_data->gps.latitude_ref = value[0];
 
     if (!gps_directory.Get(kGpsTagLongitudeRef, &value) || value.empty() ||
         (value[0] != 'E' && value[0] != 'W') ||
-        !GetRational(kGpsTagLongitude, gps_directory, 3,
-                     &preview_image_data->gps.longitude[0])) {
+        !GetRational(kGpsTagLongitude, gps_directory, 3 /* data size */,
+                     preview_image_data->gps.longitude)) {
       return;
     }
     preview_image_data->gps.longitude_ref = value[0];
+
+    if (!GetRational(kGpsTagTimeStamp, gps_directory, 3 /* data size */,
+                     preview_image_data->gps.time_stamp)) {
+      return;
+    }
+
+    constexpr size_t kGpsDateStampSize = 11;
+    if (!gps_directory.Get(kGpsTagDateStamp,
+                           &preview_image_data->gps.date_stamp)) {
+      return;
+    }
+    if (preview_image_data->gps.date_stamp.size() == kGpsDateStampSize) {
+      // Resize the date_stamp to remove the "NULL" at the end of string.
+      preview_image_data->gps.date_stamp.resize(kGpsDateStampSize - 1);
+    } else {
+      return;
+    }
 
     if (gps_directory.Has(kGpsTagAltitudeRef) &&
         gps_directory.Has(kGpsTagAltitude)) {
@@ -533,7 +552,8 @@ Error TiffParser::Parse(const TagSet& desired_tags,
         tiff_content->gps_directory.reset(new TiffDirectory(endian_));
         const TagSet gps_tags = {kGpsTagLatitudeRef,  kGpsTagLatitude,
                                  kGpsTagLongitudeRef, kGpsTagLongitude,
-                                 kGpsTagAltitudeRef,  kGpsTagAltitude};
+                                 kGpsTagAltitudeRef,  kGpsTagAltitude,
+                                 kGpsTagTimeStamp,    kGpsTagDateStamp};
         return ParseDirectory(
             tiff_offset_, tiff_offset_ + offset, endian_, gps_tags, stream_,
             tiff_content->gps_directory.get(), &next_ifd_offset);

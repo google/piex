@@ -46,6 +46,8 @@ enum Tags {
   kGpsTagLongitude = 4,
   kGpsTagAltitudeRef = 5,
   kGpsTagAltitude = 6,
+  kGpsTagTimeStamp = 7,
+  kGpsTagDateStamp = 29,
   kOlymTagAspectFrame = 0x1113,
   kOlymTagCameraSettings = 0x2020,
   kOlymTagRawProcessing = 0x2040,

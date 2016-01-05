@@ -81,10 +81,10 @@ class PagedByteArray {
   // The corresponding getPage() implementation could then look like this:
   //
   //   void getPage(size_t page_index, const unsigned char** begin,
-  //       const unsigned char** end, photos::ncf::util::SharedPtr<Page>* page)
+  //       const unsigned char** end, std::shared_ptr<Page>* page)
   //       {
   //     // Create a new page.
-  //     photos::ncf::util::SharedPtr<FilePage> file_page(new FilePage());
+  //     std::shared_ptr<FilePage> file_page(new FilePage());
   //
   //     // Read contents of page from file into file_page->bytes.
   //     [...]
@@ -141,6 +141,52 @@ class PagedByteArray {
 
 typedef std::shared_ptr<PagedByteArray> PagedByteArrayPtr;
 
+// Smart pointer that has the same semantics as a "const unsigned char *" (plus
+// some convenience functions) but provides range checking and the ability to
+// access arrays that are not contiguous in memory or do not reside entirely in
+// memory (through the PagedByteArray interface).
+//
+// In the following, we abbreviate RangeCheckedBytePtr as RCBP.
+//
+// The intent of this class is to allow easy security hardening of code that
+// parses binary data structures using raw byte pointers. To do this, only the
+// declarations of the pointers need to be changed; the code that uses the
+// pointers can remain unchanged.
+//
+// If an illegal operation occurs on a pointer, an error flag is set, and all
+// read operations from this point on return 0. This means that error checking
+// need not be done after every access; it is sufficient to check the error flag
+// (using errorOccurred()) once before the RCBP is destroyed. Again, this allows
+// the majority of the parsing code to remain unchanged. (Note caveats below
+// that apply if a copy of the pointer is created.)
+//
+// Legal operations are exactly the ones that would be legal on a raw C++
+// pointer. Read accesses are legal if they fall within the underlying array. A
+// RCBP may point to any element in the underlying array or one element beyond
+// the end of the array.
+//
+// For brevity, the documentation for individual member functions does not state
+// explicitly that the error flag will be set on out-of-range operations.
+//
+// Note:
+//
+// - Just as for raw pointers, it is legal for a pointer to point one element
+//   beyond the end of the array, but it is illegal to use operator*() on such a
+//   pointer.
+//
+// - If a copy of an RCBP is created, then performing illegal operations on the
+//   copy affects the error flag of the copy, but not of the original pointer.
+//   Note that using operator+ and operator- also creates a copy of the pointer.
+//   For example:
+//
+//     // Assume we have an RCBP called "p" and a size_t variable called
+//     // "offset".
+//     RangeCheckedBytePtr sub_data_structure = p + offset;
+//
+//   If "offset" is large enough to cause an out-of-range access, then
+//   sub_data_structure.errorOccurred() will be true, but p.errorOccurred() will
+//   still be false. The error flag for sub_data_structure therefore needs to be
+//   checked before it is destroyed.
 class RangeCheckedBytePtr {
  private:
   // This class maintains the following class invariants:
@@ -209,13 +255,18 @@ class RangeCheckedBytePtr {
   mutable size_t current_page_len_;
 
   // Error flag. This is mutable because methods that don't affect the value
-  // of the pointer itself (such as operator+() and operator-())
-  // nevertheless need to be able to signal error conditions.
+  // of the pointer itself (such as operator[]) nevertheless need to be able to
+  // signal error conditions.
   mutable MemoryStatus error_flag_;
 
   RangeCheckedBytePtr();
 
  public:
+  // Creates a pointer that points to the first element of 'array', which has a
+  // length of 'len'. The caller must ensure that the array remains valid until
+  // this pointer and any pointers created from it have been destroyed.
+  // Note: 'len' may be zero, but 'array' must in this case still be a valid,
+  // non-null pointer.
   explicit RangeCheckedBytePtr(const unsigned char *array, const size_t len);
 
   // Creates a pointer that points to the first element of the given
@@ -230,14 +281,21 @@ class RangeCheckedBytePtr {
   // invalidPointer(); use errorOccurred() instead.
   static RangeCheckedBytePtr invalidPointer();
 
-  // Returns a RangeCheckedBytePtr points to an array which start at the byte
-  // position "pos" and spans length bytes.
-  // If the desired range is is out of the RangeCheckedBytePtr's range returns
-  // an invalid pointer.
+  // Returns a RangeCheckedBytePtr that points to a sub-array of this pointer's
+  // underlying array. The sub-array starts at position 'pos' relative to this
+  // pointer and is 'length' bytes long. The sub-array must lie within this
+  // pointer's array, i.e. pos + length <= remainingLength() must hold. If this
+  // condition is violated, an invalid pointer is returned.
   RangeCheckedBytePtr pointerToSubArray(size_t pos, size_t length) const;
 
+  // Returns the number of bytes remaining in the array from this pointer's
+  // present position.
   inline size_t remainingLength() const;
 
+  // Returns the offset (or index) in the underlying array that this pointer
+  // points to. If this pointer was created using pointerToSubArray(), the
+  // offset is relative to the beginning of the sub-array (and not relative to
+  // the beginning of the original array).
   size_t offsetInArray() const;
 
   // Returns whether an out-of-bounds error has ever occurred on this pointer in
@@ -254,17 +312,15 @@ class RangeCheckedBytePtr {
   // equivalent to the semantics of raw C++ pointers.
   inline bool errorOccurred() const;
 
-  // DEPRECATED: Use "!errorOccurred()" instead (note negation), which returns
-  // the same result as isValid() in all cases.
-  inline bool isValid() const;
-
+  // Returns the substring of length 'length' located at position 'pos' relative
+  // to this pointer.
   std::string substr(size_t pos, size_t length) const;
 
+  // Returns 'length' number of bytes from the array starting at position 'pos'
+  // relative to this pointer.
   std::vector<unsigned char> extractBytes(size_t pos, size_t length) const;
 
-  // This function is not endian-agnostic. But we think it better than using
-  // reinterpret_cast or simply casting the unsigned char * pointer to T *
-  // which is also not endian-agnostic
+  // Equivalent to calling convert(0, output).
   template <class T>
   bool convert(T *output) const {
     union {
@@ -280,6 +336,25 @@ class RangeCheckedBytePtr {
     return !errorOccurred();
   }
 
+  // Reinterprets this pointer as a pointer to an array of T, then returns the
+  // element at position 'index' in this array of T. (Note that this position
+  // corresponds to position index * sizeof(T) in the underlying byte array.)
+  //
+  // Returns true if successful; false if an out-of-range error occurred or if
+  // the error flag was already set on the pointer when calling convert().
+  //
+  // The conversion from a sequence of sizeof(T) bytes to a T is performed in an
+  // implementation-defined fashion. This conversion is equivalent to the one
+  // obtained using the following union by filling the array 'ch' and then
+  // reading the member 't':
+  //
+  //   union {
+  //     T t;
+  //     unsigned char ch[sizeof(T)];
+  //   };
+  //
+  // Callers should note that, among other things, the conversion is not
+  // endian-agnostic with respect to the endianness of T.
   template <class T>
   bool convert(size_t index, T *output) const {
     RangeCheckedBytePtr p = (*this) + index * sizeof(T);
@@ -290,9 +365,11 @@ class RangeCheckedBytePtr {
     return valid;
   }
 
-  // operators
+  // Operators. Unless otherwise noted, these operators have the same semantics
+  // as the same operators on an unsigned char pointer.
 
-  // this returns a 0 (static_cast<unsigned char>(0)) if out of range
+  // If an out-of-range access is attempted, returns 0 (and sets the error
+  // flag).
   inline unsigned char operator[](size_t i) const;
 
   inline unsigned char operator*() const;
@@ -331,27 +408,60 @@ class RangeCheckedBytePtr {
   void restrictPageToSubArray() const;
 };
 
-// util functions
+// Returns the result of calling std::memcmp() on the sequences of 'num' bytes
+// pointed to by 'x' and 'y'. The result is undefined if either
+// x.remainingLength() or y.remainingLength() is less than 'num'.
 int memcmp(const RangeCheckedBytePtr &x, const RangeCheckedBytePtr &y,
            size_t num);
 
+// Returns the result of calling std::memcmp() (note: _not_ strcmp()) on the
+// y.length() number of bytes pointed to by 'x' and the string 'y'. The result
+// is undefined if x.remainingLength() is less than y.length().
 int strcmp(const RangeCheckedBytePtr &x, const std::string &y);
 
+// Returns the length of the zero-terminated string starting at 'src' (not
+// including the '\0' terminator). If no '\0' occurs before the end of the
+// array, the result is undefined.
 size_t strlen(const RangeCheckedBytePtr &src);
 
-// Decode 16-bit signed integer from binary input.
+// Integer decoding functions.
+//
+// These functions read signed (Get16s, Get32s) or unsigned (Get16u, Get32u)
+// integers from 'input'. The integer read from the input can be specified to be
+// either big-endian (big_endian == true) or little-endian
+// (little_endian == false). Signed integers are read in two's-complement
+// representation. The integer read in the specified format is then converted to
+// the implementation's native integer representation and returned. In other
+// words, the semantics of these functions are independent of the
+// implementation's endianness and signed integer representation.
+//
+// If an out-of-range error occurs, these functions do _not_ set the error flag
+// on 'input'. Instead, they set 'status' to RANGE_CHECKED_BYTE_ERROR and return
+// 0.
+//
+// Note:
+// - If an error occurs and 'status' is already set to an error value (i.e. a
+//   value different from RANGE_CHECKED_BYTE_SUCCESS), the value of 'status' is
+//   left unchanged.
+// - If the operation is successful, 'status' is left unchanged (i.e. it is not
+//   actively set to RANGE_CHECKED_BYTE_SUCCESS).
+//
+// Together, these two properties mean that these functions can be used to read
+// a number of integers in succession with only a single error check, like this:
+//
+//   MemoryStatus status = RANGE_CHECKED_BYTE_SUCCESS;
+//   int16 val1 = Get16s(input, false, &status);
+//   int32 val2 = Get32s(input + 2, false, &status);
+//   uint32 val3 = Get32u(input + 6, false, &status);
+//   if (status != RANGE_CHECKED_BYTE_SUCCESS) {
+//     // error handling
+//   }
 int16 Get16s(const RangeCheckedBytePtr &input, const bool big_endian,
              MemoryStatus *status);
-
-// Decode 16-bit unsigned integer from binary input.
 uint16 Get16u(const RangeCheckedBytePtr &input, const bool big_endian,
               MemoryStatus *status);
-
-// Decode 32-bit signed integer from binary input.
 int32 Get32s(const RangeCheckedBytePtr &input, const bool big_endian,
              MemoryStatus *status);
-
-// Decode 32-bit unsigned integer from binary input.
 uint32 Get32u(const RangeCheckedBytePtr &input, const bool big_endian,
               MemoryStatus *status);
 
@@ -372,10 +482,6 @@ size_t RangeCheckedBytePtr::remainingLength() const {
 
 bool RangeCheckedBytePtr::errorOccurred() const {
   return error_flag_ != RANGE_CHECKED_BYTE_SUCCESS;
-}
-
-bool RangeCheckedBytePtr::isValid() const {
-  return error_flag_ == RANGE_CHECKED_BYTE_SUCCESS;
 }
 
 unsigned char RangeCheckedBytePtr::operator[](size_t i) const {
