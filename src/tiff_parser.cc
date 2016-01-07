@@ -16,6 +16,8 @@
 
 #include "src/tiff_parser.h"
 
+#include <cstring>
+
 #include "src/tiff_directory/tiff_directory.h"
 
 namespace piex {
