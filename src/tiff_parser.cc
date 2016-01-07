@@ -158,8 +158,7 @@ void FillGpsPreviewImageData(const TiffDirectory& gps_directory,
 }
 
 Error FillPreviewImageData(const TiffDirectory& tiff_directory,
-                           PreviewImageData* preview_image_data,
-                           bool* has_preview) {
+                           PreviewImageData* preview_image_data) {
   bool success = true;
   // Get jpeg_offset and jpeg_length
   if (tiff_directory.Has(kTiffTagStripOffsets) &&
@@ -170,19 +169,16 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
         !tiff_directory.Get(kTiffTagStripByteCounts, &strip_byte_counts)) {
       return kFail;
     }
-    if (strip_offsets.size() != 1 || strip_byte_counts.size() != 1) {
-      return kUnsupported;
+    if (strip_offsets.size() == 1 && strip_byte_counts.size() == 1) {
+      preview_image_data->jpeg_offset = strip_offsets[0];
+      preview_image_data->jpeg_length = strip_byte_counts[0];
     }
-    preview_image_data->jpeg_offset = strip_offsets[0];
-    preview_image_data->jpeg_length = strip_byte_counts[0];
-    *has_preview = true;
   } else if (tiff_directory.Has(kTiffTagJpegOffset) &&
              tiff_directory.Has(kTiffTagJpegByteCount)) {
     success &= tiff_directory.Get(kTiffTagJpegOffset,
                                   &preview_image_data->jpeg_offset);
     success &= tiff_directory.Get(kTiffTagJpegByteCount,
                                   &preview_image_data->jpeg_length);
-    *has_preview = true;
   } else if (tiff_directory.Has(kPanaTagJpegImage)) {
     if (!tiff_directory.GetOffsetAndLength(kPanaTagJpegImage,
                                            TIFF_TYPE_UNDEFINED,
@@ -190,7 +186,6 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
                                            &preview_image_data->jpeg_length)) {
       return kFail;
     }
-    *has_preview = true;
   }
 
   // Get exif_orientation
@@ -484,15 +479,13 @@ TiffParser::TiffParser(StreamInterface* stream, const std::uint32_t offset)
 
 Error TiffParser::GetPreviewImageData(const TiffContent& tiff_content,
                                       PreviewImageData* preview_image_data) {
-  bool has_preview = false;
   Error error = kOk;
   for (const auto& tiff_directory : tiff_content.tiff_directory) {
-    error =
-        FillPreviewImageData(tiff_directory, preview_image_data, &has_preview);
+    error = FillPreviewImageData(tiff_directory, preview_image_data);
     if (error == kOk && tiff_directory.Has(kTiffTagExifIfd) &&
         tiff_content.exif_directory) {
       error = FillPreviewImageData(*tiff_content.exif_directory,
-                                   preview_image_data, &has_preview);
+                                   preview_image_data);
     }
     if (error == kOk && tiff_directory.Has(kExifTagGps) &&
         tiff_content.gps_directory) {
@@ -500,14 +493,9 @@ Error TiffParser::GetPreviewImageData(const TiffContent& tiff_content,
     }
     for (const auto& sub_directory : tiff_directory.GetSubDirectories()) {
       if (error == kOk) {
-        error = FillPreviewImageData(sub_directory, preview_image_data,
-                                     &has_preview);
+        error = FillPreviewImageData(sub_directory, preview_image_data);
       }
     }
-  }
-
-  if (error == kOk && !has_preview) {
-    return kUnsupported;
   }
   return error;
 }

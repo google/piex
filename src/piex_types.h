@@ -56,7 +56,7 @@ struct PreviewImageData {
     std::string date_stamp;  // Giving as "YYYY:MM:DD" format.
   };
 
-  // Required data to find the preview image and to handle it correctly.
+  // Optional data to find the preview image and to handle it correctly.
   std::uint32_t jpeg_offset = 0;
   std::uint32_t jpeg_length = 0;
   std::uint32_t exif_orientation = 1;  // horizontal as default

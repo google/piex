@@ -67,7 +67,10 @@ bool IsRaw(StreamInterface* data);
 // offset to a JPEG compressed image from the beginning of the file.
 //
 // Returns 'kFail' when something with the data is wrong.
-// Returns 'kUnsupported' if no preview image data was found.
+// Returns 'kUnsupported' if file format is not supported.
+//
+// One could check the "preview_image_data->jpeg_length != 0" for the existance
+// of a preview image.
 Error GetPreviewImageData(StreamInterface* data,
                           PreviewImageData* preview_image_data);
 

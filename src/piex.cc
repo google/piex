@@ -309,6 +309,7 @@ Error DngGetPreviewData(StreamInterface* stream,
 
   // Find the largest jpeg compressed preview image.
   std::uint32_t jpeg_length = 0;
+  std::uint32_t jpeg_offset = 0;
   for (const auto& ifd : tiff_content.tiff_directory[0].GetSubDirectories()) {
     std::uint32_t compression;
     std::uint32_t photometric_interpretation;
@@ -325,16 +326,12 @@ Error DngGetPreviewData(StreamInterface* stream,
           strip_offsets.size() == 1 && byte_counts.size() == 1 &&
           byte_counts[0] > jpeg_length) {
         jpeg_length = byte_counts[0];
-        preview_image_data->jpeg_length = jpeg_length;
-        preview_image_data->jpeg_offset = strip_offsets[0];
+        jpeg_offset = strip_offsets[0];
       }
     }
   }
-
-  // A 'jpeg_length' of 0 indicates that we could not find any jpeg preview.
-  if (jpeg_length == 0) {
-    return kUnsupported;
-  }
+  preview_image_data->jpeg_length = jpeg_length;
+  preview_image_data->jpeg_offset = jpeg_offset;
 
   // This format doesn't necessarily embed a full jpeg.
   preview_image_data->full_preview = false;
@@ -362,25 +359,27 @@ Error NefGetPreviewData(StreamInterface* stream,
   // size needs to be taken into account. Based on experiments the preview image
   // dimensions must be at least 90% of the sensor image dimensions to let it be
   // a full size preview image.
-  const float kEpsilon = 0.9f;
+  if (preview_image_data->jpeg_length > 0) {  // when preview image exists
+    const float kEpsilon = 0.9f;
 
-  std::uint16_t width;
-  std::uint16_t height;
-  if (!GetPreviewDimensions(preview_image_data->jpeg_offset, stream, &width,
-                            &height) ||
-      preview_image_data->full_width == 0 ||
-      preview_image_data->full_height == 0) {
-    return kUnsupported;
-  }
+    std::uint16_t width;
+    std::uint16_t height;
+    if (!GetPreviewDimensions(preview_image_data->jpeg_offset, stream, &width,
+                              &height) ||
+        preview_image_data->full_width == 0 ||
+        preview_image_data->full_height == 0) {
+      return kUnsupported;
+    }
 
-  if (static_cast<float>(width) /
-              static_cast<float>(preview_image_data->full_width) >
-          kEpsilon ||
-      static_cast<float>(height) /
-              static_cast<float>(preview_image_data->full_height) >
-          kEpsilon) {
-    preview_image_data->full_width = width;
-    preview_image_data->full_height = height;
+    if (static_cast<float>(width) /
+                static_cast<float>(preview_image_data->full_width) >
+            kEpsilon ||
+        static_cast<float>(height) /
+                static_cast<float>(preview_image_data->full_height) >
+            kEpsilon) {
+      preview_image_data->full_width = width;
+      preview_image_data->full_height = height;
+    }
   }
   return kOk;
 }
@@ -416,11 +415,13 @@ Error RafGetPreviewData(StreamInterface* stream,
     return kFail;
   }
 
-  // Parse the Exif information from the preview image. Omit kUnsupported,
-  // because the exif data does not contain any preview image.
-  const std::uint32_t exif_offset = jpeg_offset + 12;
-  if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
-    return kFail;
+  if (jpeg_length > 0) {  // when preview image exists
+    // Parse the Exif information from the preview image. Omit kUnsupported,
+    // because the exif data does not contain any preview image.
+    const std::uint32_t exif_offset = jpeg_offset + 12;
+    if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
+      return kFail;
+    }
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
@@ -453,11 +454,13 @@ Error Rw2GetPreviewData(StreamInterface* stream,
     return error;
   }
 
-  // Parse the Exif information from the preview image. Omit kUnsupported,
-  // because the exif data does not contain any preview image.
-  const std::uint32_t exif_offset = preview_data.jpeg_offset + 12;
-  if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
-    return kFail;
+  if (preview_data.jpeg_length > 0) {  // when preview image exists
+    // Parse the Exif information from the preview image. Omit kUnsupported,
+    // because the exif data does not contain any preview image.
+    const std::uint32_t exif_offset = preview_data.jpeg_offset + 12;
+    if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
+      return kFail;
+    }
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
