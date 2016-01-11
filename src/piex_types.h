@@ -56,9 +56,14 @@ struct PreviewImageData {
     std::string date_stamp;  // Giving as "YYYY:MM:DD" format.
   };
 
-  // Optional data to find the preview image and to handle it correctly.
+  // Optional data to find the preview and thumbnail image to handle them
+  // correctly. A thumbnail is typically 160x120 pixel small and usually
+  // has black borders at the top and bottom. If length is 0 the image could not
+  // be extracted.
   std::uint32_t jpeg_offset = 0;
   std::uint32_t jpeg_length = 0;
+  std::uint32_t thumbnail_offset = 0;
+  std::uint32_t thumbnail_length = 0;
   std::uint32_t exif_orientation = 1;  // horizontal as default
   ColorSpace color_space = kSrgb;
 
@@ -73,12 +78,6 @@ struct PreviewImageData {
   Rational fnumber;
   Rational focal_length;
   Gps gps;
-
-  // Hint of the extracted preview size compared to the actual RAW image.
-  // If full_preview == true, then the preview suppose to have a similar or
-  // larger size then the RAW image, else the preview image might be
-  // significantly smaller, e.g. only half of the RAW image size.
-  bool full_preview;
 };
 
 // Defines the StreamInterface that needs to be implemented by the client.

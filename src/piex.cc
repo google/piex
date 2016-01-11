@@ -77,6 +77,19 @@ Error GetExifData(const std::uint32_t exif_offset, StreamInterface* stream,
                         &tiff_content, preview_image_data);
 }
 
+// Reads the jpeg compressed thumbnail information.
+void GetThumbnailOffsetAndLength(StreamInterface* stream,
+                                 PreviewImageData* preview_image_data) {
+  const std::uint32_t kNumberOfIfds = 2;
+  const TagSet extended_tags = {kTiffTagJpegByteCount, kTiffTagJpegOffset};
+  PreviewImageData thumbnail_data;
+  if (GetPreviewData(extended_tags, kNumberOfIfds, stream, &thumbnail_data) ==
+      kOk) {
+    preview_image_data->thumbnail_offset = thumbnail_data.jpeg_offset;
+    preview_image_data->thumbnail_length = thumbnail_data.jpeg_length;
+  }
+}
+
 Error GetExifIfd(const Endian endian, StreamInterface* stream,
                  TiffDirectory* exif_ifd) {
   const std::uint32_t kTiffOffset = 0;
@@ -114,9 +127,10 @@ Error GetMakernoteIfd(const TiffDirectory& exif_ifd, const Endian endian,
   }
 
   std::uint32_t next_ifd_offset;
-  return ParseDirectory(*makernote_offset, *makernote_offset + 12, endian,
-                        {kOlymTagCameraSettings, kOlymTagRawProcessing}, stream,
-                        makernote_ifd, &next_ifd_offset);
+  return ParseDirectory(
+      *makernote_offset, *makernote_offset + 12, endian,
+      {kTiffTagImageWidth, kOlymTagCameraSettings, kOlymTagRawProcessing},
+      stream, makernote_ifd, &next_ifd_offset);
 }
 
 Error GetCameraSettingsIfd(const TiffDirectory& makernote_ifd,
@@ -188,6 +202,16 @@ Error GetOlympusPreviewImage(StreamInterface* stream,
                           &makernote_ifd);
   if (error != kOk) {
     return error;
+  }
+
+  const std::uint32_t kThumbnailTag = 0x0100;
+  if (makernote_ifd.Has(kThumbnailTag)) {
+    if (!makernote_ifd.GetOffsetAndLength(
+            kThumbnailTag, tiff_directory::TIFF_TYPE_UNDEFINED,
+            &preview_image_data->thumbnail_offset,
+            &preview_image_data->thumbnail_length)) {
+      return kFail;
+    }
   }
 
   TiffDirectory camera_settings_ifd(endian);
@@ -275,8 +299,9 @@ Error ArwGetPreviewData(StreamInterface* stream,
   const TagSet extended_tags = {kExifTagHeight, kExifTagWidth,
                                 kTiffTagJpegByteCount, kTiffTagJpegOffset,
                                 kTiffTagSubIfd};
-  // This camera maker doesn't embed a full jpeg.
-  preview_image_data->full_preview = false;
+
+  GetThumbnailOffsetAndLength(stream, preview_image_data);
+
   const std::uint32_t kNumberOfIfds = 1;
   return GetPreviewData(extended_tags, kNumberOfIfds, stream,
                         preview_image_data);
@@ -286,8 +311,9 @@ Error Cr2GetPreviewData(StreamInterface* stream,
                         PreviewImageData* preview_image_data) {
   const TagSet extended_tags = {kExifTagHeight, kExifTagWidth,
                                 kTiffTagStripByteCounts, kTiffTagStripOffsets};
-  // This camera maker embeds at least a full sized jpeg.
-  preview_image_data->full_preview = true;
+
+  GetThumbnailOffsetAndLength(stream, preview_image_data);
+
   const std::uint32_t kNumberOfIfds = 1;
   return GetPreviewData(extended_tags, kNumberOfIfds, stream,
                         preview_image_data);
@@ -332,10 +358,6 @@ Error DngGetPreviewData(StreamInterface* stream,
   }
   preview_image_data->jpeg_length = jpeg_length;
   preview_image_data->jpeg_offset = jpeg_offset;
-
-  // This format doesn't necessarily embed a full jpeg.
-  preview_image_data->full_preview = false;
-
   return kOk;
 }
 
@@ -344,8 +366,6 @@ Error NefGetPreviewData(StreamInterface* stream,
   const TagSet extended_tags = {kTiffTagImageWidth, kTiffTagImageLength,
                                 kTiffTagJpegByteCount, kTiffTagJpegOffset,
                                 kTiffTagSubIfd};
-  // This camera maker embeds a full jpeg.
-  preview_image_data->full_preview = true;
   const std::uint32_t kNumberOfIfds = 2;
   Error error =
       GetPreviewData(extended_tags, kNumberOfIfds, stream, preview_image_data);
@@ -386,9 +406,6 @@ Error NefGetPreviewData(StreamInterface* stream,
 
 Error OrfGetPreviewData(StreamInterface* stream,
                         PreviewImageData* preview_image_data) {
-  // This camera maker embeds a full jpeg.
-  preview_image_data->full_preview = true;
-
   // Omit kUnsupported, because the exif data does not contain any preview
   // image.
   if (GetExifData(0, stream, preview_image_data) == kFail) {
@@ -427,10 +444,6 @@ Error RafGetPreviewData(StreamInterface* stream,
   // Merge the Exif data with the RAW data to form the preview_image_data.
   preview_image_data->jpeg_offset = jpeg_offset;
   preview_image_data->jpeg_length = jpeg_length;
-
-  // This camera maker doesn't embed a full jpeg.
-  preview_image_data->full_preview = false;
-
   return kOk;
 }
 
@@ -440,10 +453,6 @@ Error Rw2GetPreviewData(StreamInterface* stream,
                                 kPanaTagBottomBorder,  kPanaTagRightBorder,
                                 kPanaTagIso,           kPanaTagJpegImage,
                                 kTiffTagJpegByteCount, kTiffTagJpegOffset};
-
-  // This camera maker embeds not a full jpeg.
-  preview_image_data->full_preview = false;
-
   // Parse the RAW data to get the ISO, offset and length of the preview image,
   // which contains the Exif information.
   const std::uint32_t kNumberOfIfds = 1;
