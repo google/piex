@@ -71,8 +71,8 @@ Error GetPreviewData(const TagSet& extended_tags,
 
 Error GetExifData(const std::uint32_t exif_offset, StreamInterface* stream,
                   PreviewImageData* preview_image_data) {
-  const TagSet kExtendedTags = {kTiffTagImageWidth, kTiffTagImageLength};
-  const std::uint32_t kNumberOfIfds = 1;
+  const TagSet kExtendedTags = {kTiffTagJpegByteCount, kTiffTagJpegOffset};
+  const std::uint32_t kNumberOfIfds = 2;
   TiffContent tiff_content;
   return GetPreviewData(kExtendedTags, exif_offset, kNumberOfIfds, stream,
                         &tiff_content, preview_image_data);
@@ -439,10 +439,10 @@ Error RafGetPreviewData(StreamInterface* stream,
   // Parse the Fuji RAW header to get the offset and length of the preview
   // image, which contains the Exif information.
   const Endian endian = tiff_directory::kBigEndian;
-  std::uint32_t jpeg_offset = 0;
-  std::uint32_t jpeg_length = 0;
-  if (!Get32u(stream, 84 /* jpeg offset */, endian, &jpeg_offset) ||
-      !Get32u(stream, 88 /* jpeg length */, endian, &jpeg_length)) {
+  std::uint32_t preview_offset = 0;
+  std::uint32_t preview_length = 0;
+  if (!Get32u(stream, 84 /* preview offset */, endian, &preview_offset) ||
+      !Get32u(stream, 88 /* preview length */, endian, &preview_length)) {
     return kFail;
   }
 
@@ -451,18 +451,22 @@ Error RafGetPreviewData(StreamInterface* stream,
     return kFail;
   }
 
-  if (jpeg_length > 0) {  // when preview image exists
+  if (preview_length > 0) {  // when preview image exists
     // Parse the Exif information from the preview image. Omit kUnsupported,
     // because the exif data does not contain any preview image.
-    const std::uint32_t exif_offset = jpeg_offset + 12;
+    const std::uint32_t exif_offset = preview_offset + 12;
     if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
       return kFail;
     }
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
-  preview_image_data->preview_offset = jpeg_offset;
-  preview_image_data->preview_length = jpeg_length;
+  // The preview offset and length extracted from the Exif data are actually
+  // the thumbnail offset and length.
+  preview_image_data->thumbnail_offset = preview_image_data->preview_offset;
+  preview_image_data->thumbnail_length = preview_image_data->preview_length;
+  preview_image_data->preview_offset = preview_offset;
+  preview_image_data->preview_length = preview_length;
   return kOk;
 }
 
@@ -492,6 +496,10 @@ Error Rw2GetPreviewData(StreamInterface* stream,
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
+  // The preview offset and length extracted from the Exif data are actually
+  // the thumbnail offset and length.
+  preview_image_data->thumbnail_offset = preview_image_data->preview_offset;
+  preview_image_data->thumbnail_length = preview_image_data->preview_length;
   preview_image_data->preview_offset = preview_data.preview_offset;
   preview_image_data->preview_length = preview_data.preview_length;
   preview_image_data->iso = preview_data.iso;
