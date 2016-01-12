@@ -60,8 +60,8 @@ struct PreviewImageData {
   // correctly. A thumbnail is typically 160x120 pixel small and usually
   // has black borders at the top and bottom. If length is 0 the image could not
   // be extracted.
-  std::uint32_t jpeg_offset = 0;
-  std::uint32_t jpeg_length = 0;
+  std::uint32_t preview_offset = 0;
+  std::uint32_t preview_length = 0;
   std::uint32_t thumbnail_offset = 0;
   std::uint32_t thumbnail_length = 0;
   std::uint32_t exif_orientation = 1;  // horizontal as default

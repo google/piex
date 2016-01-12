@@ -172,20 +172,20 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
       return kFail;
     }
     if (strip_offsets.size() == 1 && strip_byte_counts.size() == 1) {
-      preview_image_data->jpeg_offset = strip_offsets[0];
-      preview_image_data->jpeg_length = strip_byte_counts[0];
+      preview_image_data->preview_offset = strip_offsets[0];
+      preview_image_data->preview_length = strip_byte_counts[0];
     }
   } else if (tiff_directory.Has(kTiffTagJpegOffset) &&
              tiff_directory.Has(kTiffTagJpegByteCount)) {
     success &= tiff_directory.Get(kTiffTagJpegOffset,
-                                  &preview_image_data->jpeg_offset);
+                                  &preview_image_data->preview_offset);
     success &= tiff_directory.Get(kTiffTagJpegByteCount,
-                                  &preview_image_data->jpeg_length);
+                                  &preview_image_data->preview_length);
   } else if (tiff_directory.Has(kPanaTagJpegImage)) {
-    if (!tiff_directory.GetOffsetAndLength(kPanaTagJpegImage,
-                                           TIFF_TYPE_UNDEFINED,
-                                           &preview_image_data->jpeg_offset,
-                                           &preview_image_data->jpeg_length)) {
+    if (!tiff_directory.GetOffsetAndLength(
+            kPanaTagJpegImage, TIFF_TYPE_UNDEFINED,
+            &preview_image_data->preview_offset,
+            &preview_image_data->preview_length)) {
       return kFail;
     }
   }

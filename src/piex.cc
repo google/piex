@@ -17,6 +17,7 @@
 #include "src/piex.h"
 
 #include <cstdint>
+#include <limits>
 #include <set>
 #include <vector>
 
@@ -85,8 +86,8 @@ void GetThumbnailOffsetAndLength(StreamInterface* stream,
   PreviewImageData thumbnail_data;
   if (GetPreviewData(extended_tags, kNumberOfIfds, stream, &thumbnail_data) ==
       kOk) {
-    preview_image_data->thumbnail_offset = thumbnail_data.jpeg_offset;
-    preview_image_data->thumbnail_length = thumbnail_data.jpeg_length;
+    preview_image_data->thumbnail_offset = thumbnail_data.preview_offset;
+    preview_image_data->thumbnail_length = thumbnail_data.preview_length;
   }
 }
 
@@ -228,9 +229,9 @@ Error GetOlympusPreviewImage(StreamInterface* stream,
     return kUnsupported;
   }
 
-  camera_settings_ifd.Get(kPreviewOffset, &preview_image_data->jpeg_offset);
-  preview_image_data->jpeg_offset += makernote_offset;
-  camera_settings_ifd.Get(kPreviewLength, &preview_image_data->jpeg_length);
+  camera_settings_ifd.Get(kPreviewOffset, &preview_image_data->preview_offset);
+  preview_image_data->preview_offset += makernote_offset;
+  camera_settings_ifd.Get(kPreviewLength, &preview_image_data->preview_length);
 
   // Get the crop size from the raw processing ifd.
   TiffDirectory raw_processing_ifd(endian);
@@ -333,9 +334,11 @@ Error DngGetPreviewData(StreamInterface* stream,
     return error;
   }
 
-  // Find the largest jpeg compressed preview image.
-  std::uint32_t jpeg_length = 0;
-  std::uint32_t jpeg_offset = 0;
+  // Find the largest and smallest jpeg compressed preview image.
+  std::uint32_t preview_length = 0;
+  std::uint32_t preview_offset = 0;
+  std::uint32_t thumbnail_length = std::numeric_limits<std::uint32_t>::max();
+  std::uint32_t thumbnail_offset = std::numeric_limits<std::uint32_t>::max();
   for (const auto& ifd : tiff_content.tiff_directory[0].GetSubDirectories()) {
     std::uint32_t compression;
     std::uint32_t photometric_interpretation;
@@ -349,15 +352,26 @@ Error DngGetPreviewData(StreamInterface* stream,
       std::vector<std::uint32_t> byte_counts;
       if (ifd.Get(kTiffTagStripOffsets, &strip_offsets) &&
           ifd.Get(kTiffTagStripByteCounts, &byte_counts) &&
-          strip_offsets.size() == 1 && byte_counts.size() == 1 &&
-          byte_counts[0] > jpeg_length) {
-        jpeg_length = byte_counts[0];
-        jpeg_offset = strip_offsets[0];
+          strip_offsets.size() == 1 && byte_counts.size() == 1) {
+        if (byte_counts[0] > preview_length) {
+          preview_length = byte_counts[0];
+          preview_offset = strip_offsets[0];
+        }
+        if (byte_counts[0] < thumbnail_length) {
+          thumbnail_length = byte_counts[0];
+          thumbnail_offset = strip_offsets[0];
+        }
       }
     }
   }
-  preview_image_data->jpeg_length = jpeg_length;
-  preview_image_data->jpeg_offset = jpeg_offset;
+  preview_image_data->preview_length = preview_length;
+  preview_image_data->preview_offset = preview_offset;
+
+  // A thumbnail image is supposed to be smaller compared to the preview.
+  if (thumbnail_length < preview_length) {
+    preview_image_data->thumbnail_length = thumbnail_length;
+    preview_image_data->thumbnail_offset = thumbnail_offset;
+  }
   return kOk;
 }
 
@@ -373,19 +387,24 @@ Error NefGetPreviewData(StreamInterface* stream,
     return error;
   }
 
+  PreviewImageData thumbnail_data;
+  GetThumbnailOffsetAndLength(stream, &thumbnail_data);
+  preview_image_data->thumbnail_offset = thumbnail_data.thumbnail_offset;
+  preview_image_data->thumbnail_length = thumbnail_data.thumbnail_length;
+
   // The Nikon RAW data provides the dimensions of the sensor image, which are
   // slightly larger than the dimensions of the preview image. In order to
   // determine the correct full width and height of the image, the preview image
   // size needs to be taken into account. Based on experiments the preview image
   // dimensions must be at least 90% of the sensor image dimensions to let it be
   // a full size preview image.
-  if (preview_image_data->jpeg_length > 0) {  // when preview image exists
+  if (preview_image_data->preview_length > 0) {  // when preview image exists
     const float kEpsilon = 0.9f;
 
     std::uint16_t width;
     std::uint16_t height;
-    if (!GetPreviewDimensions(preview_image_data->jpeg_offset, stream, &width,
-                              &height) ||
+    if (!GetPreviewDimensions(preview_image_data->preview_offset, stream,
+                              &width, &height) ||
         preview_image_data->full_width == 0 ||
         preview_image_data->full_height == 0) {
       return kUnsupported;
@@ -442,8 +461,8 @@ Error RafGetPreviewData(StreamInterface* stream,
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
-  preview_image_data->jpeg_offset = jpeg_offset;
-  preview_image_data->jpeg_length = jpeg_length;
+  preview_image_data->preview_offset = jpeg_offset;
+  preview_image_data->preview_length = jpeg_length;
   return kOk;
 }
 
@@ -463,18 +482,18 @@ Error Rw2GetPreviewData(StreamInterface* stream,
     return error;
   }
 
-  if (preview_data.jpeg_length > 0) {  // when preview image exists
+  if (preview_data.preview_length > 0) {  // when preview image exists
     // Parse the Exif information from the preview image. Omit kUnsupported,
     // because the exif data does not contain any preview image.
-    const std::uint32_t exif_offset = preview_data.jpeg_offset + 12;
+    const std::uint32_t exif_offset = preview_data.preview_offset + 12;
     if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
       return kFail;
     }
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
-  preview_image_data->jpeg_offset = preview_data.jpeg_offset;
-  preview_image_data->jpeg_length = preview_data.jpeg_length;
+  preview_image_data->preview_offset = preview_data.preview_offset;
+  preview_image_data->preview_length = preview_data.preview_length;
   preview_image_data->iso = preview_data.iso;
   preview_image_data->full_width = preview_data.full_width;
   preview_image_data->full_height = preview_data.full_height;
