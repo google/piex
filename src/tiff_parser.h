@@ -28,7 +28,18 @@
 namespace piex {
 
 // Specifies all tags that might be of interest to get the preview data.
-enum Tags {
+enum GpsTags {
+  kGpsTagLatitudeRef = 1,
+  kGpsTagLatitude = 2,
+  kGpsTagLongitudeRef = 3,
+  kGpsTagLongitude = 4,
+  kGpsTagAltitudeRef = 5,
+  kGpsTagAltitude = 6,
+  kGpsTagTimeStamp = 7,
+  kGpsTagDateStamp = 29,
+};
+
+enum TiffTags {
   kExifTagColorSpace = 0xA001,
   kExifTagDateTimeOriginal = 0x9003,
   kExifTagDefaultCropSize = 0xC620,
@@ -40,14 +51,6 @@ enum Tags {
   kExifTagIsoSpeed = 0x8827,
   kExifTagMakernotes = 0x927C,
   kExifTagWidth = 0xA002,
-  kGpsTagLatitudeRef = 1,
-  kGpsTagLatitude = 2,
-  kGpsTagLongitudeRef = 3,
-  kGpsTagLongitude = 4,
-  kGpsTagAltitudeRef = 5,
-  kGpsTagAltitude = 6,
-  kGpsTagTimeStamp = 7,
-  kGpsTagDateStamp = 29,
   kOlymTagAspectFrame = 0x1113,
   kOlymTagCameraSettings = 0x2020,
   kOlymTagRawProcessing = 0x2040,
@@ -57,6 +60,7 @@ enum Tags {
   kPanaTagLeftBorder = 0x0005,
   kPanaTagRightBorder = 0x007,
   kPanaTagTopBorder = 0x0004,
+  kPentaxTagColorSpace = 0x0037,
   kTiffTagArtist = 0x013B,
   kTiffTagBitsPerSample = 0x0102,
   kTiffTagCompression = 0x0103,
@@ -87,6 +91,7 @@ enum Tags {
   kTiffTagYresolution = 0x011B,
 };
 
+typedef int Tags;
 typedef std::set<Tags> TagSet;
 typedef std::vector<tiff_directory::TiffDirectory> IfdVector;
 

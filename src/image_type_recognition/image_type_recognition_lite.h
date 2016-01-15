@@ -54,6 +54,7 @@ enum RawImageTypes {
   kRafImage,
   kRawContaxNImage,
   kRw2Image,
+  kSrwImage,
   kX3fImage,
 };
 

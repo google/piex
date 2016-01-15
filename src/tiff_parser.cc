@@ -162,7 +162,7 @@ void FillGpsPreviewImageData(const TiffDirectory& gps_directory,
 Error FillPreviewImageData(const TiffDirectory& tiff_directory,
                            PreviewImageData* preview_image_data) {
   bool success = true;
-  // Get jpeg_offset and jpeg_length
+  // Get preview_offset and preview_length
   if (tiff_directory.Has(kTiffTagStripOffsets) &&
       tiff_directory.Has(kTiffTagStripByteCounts)) {
     std::vector<std::uint32_t> strip_offsets;
@@ -190,8 +190,9 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
     }
   }
 
-  // Get exif_orientation
-  if (tiff_directory.Has(kTiffTagOrientation)) {
+  // Get exif_orientation if it was not set already.
+  if (tiff_directory.Has(kTiffTagOrientation) &&
+      preview_image_data->exif_orientation == 1) {
     success &= tiff_directory.Get(kTiffTagOrientation,
                                   &preview_image_data->exif_orientation);
   }
@@ -202,7 +203,7 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
     success &= tiff_directory.Get(kExifTagColorSpace, &color_space);
     if (color_space == 1) {
       preview_image_data->color_space = PreviewImageData::kSrgb;
-    } else if (color_space == 65535) {
+    } else if (color_space == 65535 || color_space == 2) {
       preview_image_data->color_space = PreviewImageData::kAdobeRgb;
     }
   }

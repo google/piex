@@ -728,6 +728,45 @@ class Rw2TypeChecker : public TypeChecker {
   }
 };
 
+// Samsung RAW.
+class SrwTypeChecker : public TypeChecker {
+ public:
+  virtual RawImageTypes Type() const { return kSrwImage; }
+
+  virtual size_t RequestedSize() const { return 256; }
+
+  // Check multiple points:
+  // 1. valid big endianness at the beginning of the file;
+  // 2. magic numbers at the (offset == 2 and offset==4) positions of the file;
+  // 3. the signature "SAMSUNG" in the requested bytes of the file;
+  virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
+    // Limits the source length to the RequestedSize(), using it guarantees that
+    // we will not read more than this size from the source.
+    RangeCheckedBytePtr limited_source =
+        source.pointerToSubArray(0 /* pos */, RequestedSize());
+
+    bool use_big_endian;
+    if (!DetermineEndianness(source, &use_big_endian)) {
+      return false;
+    }
+
+    const unsigned short kTiffMagic = 0x2A;  // NOLINT
+    const unsigned int kTiffOffset = 8;
+    if (!CheckUInt16Value(limited_source, 2 /* offset */, use_big_endian,
+                          kTiffMagic) ||
+        !CheckUInt32Value(limited_source, 4 /* offset */, use_big_endian,
+                          kTiffOffset)) {
+      return false;
+    }
+
+    const string kSignature("SAMSUNG");
+    if (!IsSignatureFound(source, 0, RequestedSize(), kSignature, NULL)) {
+      return false;
+    }
+    return true;
+  }
+};
+
 // Sigma / Polaroid RAW.
 class X3fTypeChecker : public TypeChecker {
  public:
@@ -769,6 +808,7 @@ class TypeCheckerList {
     checkers_.push_back(new RafTypeChecker());
     checkers_.push_back(new RawContaxNTypeChecker());
     checkers_.push_back(new Rw2TypeChecker());
+    checkers_.push_back(new SrwTypeChecker());
     checkers_.push_back(new X3fTypeChecker());
 
     // Sort the checkers by the ascending RequestedSize() to get better
@@ -833,6 +873,7 @@ bool IsRaw(const RawImageTypes type) {
     case kRafImage:
     case kRawContaxNImage:
     case kRw2Image:
+    case kSrwImage:
     case kX3fImage: {
       return true;
     }

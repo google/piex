@@ -42,7 +42,7 @@
 //   // Uncompress the JPEG as usual, e.g. on Android with the BitmapFactory:
 //   // In Java
 //   Bitmap bitmap = BitmapFactory.decodeByteArray(
-//       file.at(image_data.jpeg_offset), image_data.jpeg_length);
+//       file.at(image_data.preview_offset), image_data.preview_length);
 
 #ifndef PIEX_PIEX_H_
 #define PIEX_PIEX_H_
@@ -69,8 +69,8 @@ bool IsRaw(StreamInterface* data);
 // Returns 'kFail' when something with the data is wrong.
 // Returns 'kUnsupported' if file format is not supported.
 //
-// One could check the "preview_image_data->jpeg_length != 0" for the existance
-// of a preview image.
+// One could check the "preview_image_data->preview_length != 0" for the
+// existance of a preview image.
 Error GetPreviewImageData(StreamInterface* data,
                           PreviewImageData* preview_image_data);
 

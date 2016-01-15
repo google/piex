@@ -79,12 +79,15 @@ Error GetExifData(const std::uint32_t exif_offset, StreamInterface* stream,
 }
 
 // Reads the jpeg compressed thumbnail information.
-void GetThumbnailOffsetAndLength(StreamInterface* stream,
+void GetThumbnailOffsetAndLength(const TagSet& extended_tags,
+                                 StreamInterface* stream,
                                  PreviewImageData* preview_image_data) {
+  TagSet desired_tags = {kTiffTagJpegByteCount, kTiffTagJpegOffset};
+  desired_tags.insert(extended_tags.cbegin(), extended_tags.cend());
+
   const std::uint32_t kNumberOfIfds = 2;
-  const TagSet extended_tags = {kTiffTagJpegByteCount, kTiffTagJpegOffset};
   PreviewImageData thumbnail_data;
-  if (GetPreviewData(extended_tags, kNumberOfIfds, stream, &thumbnail_data) ==
+  if (GetPreviewData(desired_tags, kNumberOfIfds, stream, &thumbnail_data) ==
       kOk) {
     preview_image_data->thumbnail_offset = thumbnail_data.preview_offset;
     preview_image_data->thumbnail_length = thumbnail_data.preview_length;
@@ -118,7 +121,8 @@ Error GetExifIfd(const Endian endian, StreamInterface* stream,
 }
 
 Error GetMakernoteIfd(const TiffDirectory& exif_ifd, const Endian endian,
-                      StreamInterface* stream, std::uint32_t* makernote_offset,
+                      const std::uint32_t skip_offset, StreamInterface* stream,
+                      std::uint32_t* makernote_offset,
                       TiffDirectory* makernote_ifd) {
   std::uint32_t makernote_length;
   if (!exif_ifd.GetOffsetAndLength(kExifTagMakernotes,
@@ -128,10 +132,10 @@ Error GetMakernoteIfd(const TiffDirectory& exif_ifd, const Endian endian,
   }
 
   std::uint32_t next_ifd_offset;
-  return ParseDirectory(
-      *makernote_offset, *makernote_offset + 12, endian,
-      {kTiffTagImageWidth, kOlymTagCameraSettings, kOlymTagRawProcessing},
-      stream, makernote_ifd, &next_ifd_offset);
+  return ParseDirectory(*makernote_offset, *makernote_offset + skip_offset,
+                        endian, {kTiffTagImageWidth, kOlymTagCameraSettings,
+                                 kOlymTagRawProcessing, kPentaxTagColorSpace},
+                        stream, makernote_ifd, &next_ifd_offset);
 }
 
 Error GetCameraSettingsIfd(const TiffDirectory& makernote_ifd,
@@ -199,8 +203,9 @@ Error GetOlympusPreviewImage(StreamInterface* stream,
 
   std::uint32_t makernote_offset;
   TiffDirectory makernote_ifd(endian);
-  error = GetMakernoteIfd(exif_ifd, endian, stream, &makernote_offset,
-                          &makernote_ifd);
+  const std::uint32_t kSkipMakernoteStart = 12;
+  error = GetMakernoteIfd(exif_ifd, endian, kSkipMakernoteStart, stream,
+                          &makernote_offset, &makernote_ifd);
   if (error != kOk) {
     return error;
   }
@@ -259,6 +264,39 @@ Error GetOlympusPreviewImage(StreamInterface* stream,
   return kOk;
 }
 
+Error PefGetColorSpace(StreamInterface* stream,
+                       PreviewImageData* preview_image_data) {
+  Endian endian;
+  if (!GetEndianness(0 /* tiff offset */, stream, &endian)) {
+    return kFail;
+  }
+
+  TiffDirectory exif_ifd(endian);
+  Error error = GetExifIfd(endian, stream, &exif_ifd);
+  if (error != kOk) {
+    return error;
+  }
+
+  std::uint32_t makernote_offset;
+  TiffDirectory makernote_ifd(endian);
+  const std::uint32_t kSkipMakernoteStart = 6;
+  error = GetMakernoteIfd(exif_ifd, endian, kSkipMakernoteStart, stream,
+                          &makernote_offset, &makernote_ifd);
+  if (error != kOk) {
+    return error;
+  }
+  if (makernote_ifd.Has(kPentaxTagColorSpace)) {
+    std::uint32_t color_space;
+    if (!makernote_ifd.Get(kPentaxTagColorSpace, &color_space)) {
+      return kFail;
+    }
+    preview_image_data->color_space = color_space == 0
+                                          ? PreviewImageData::kSrgb
+                                          : PreviewImageData::kAdobeRgb;
+  }
+  return kOk;
+}
+
 // Parses the Fuji Cfa header for the image width and height.
 bool RafGetDimension(StreamInterface* stream, std::uint32_t* width,
                      std::uint32_t* height) {
@@ -301,7 +339,7 @@ Error ArwGetPreviewData(StreamInterface* stream,
                                 kTiffTagJpegByteCount, kTiffTagJpegOffset,
                                 kTiffTagSubIfd};
 
-  GetThumbnailOffsetAndLength(stream, preview_image_data);
+  GetThumbnailOffsetAndLength(TagSet(), stream, preview_image_data);
 
   const std::uint32_t kNumberOfIfds = 1;
   return GetPreviewData(extended_tags, kNumberOfIfds, stream,
@@ -313,7 +351,7 @@ Error Cr2GetPreviewData(StreamInterface* stream,
   const TagSet extended_tags = {kExifTagHeight, kExifTagWidth,
                                 kTiffTagStripByteCounts, kTiffTagStripOffsets};
 
-  GetThumbnailOffsetAndLength(stream, preview_image_data);
+  GetThumbnailOffsetAndLength(TagSet(), stream, preview_image_data);
 
   const std::uint32_t kNumberOfIfds = 1;
   return GetPreviewData(extended_tags, kNumberOfIfds, stream,
@@ -388,7 +426,7 @@ Error NefGetPreviewData(StreamInterface* stream,
   }
 
   PreviewImageData thumbnail_data;
-  GetThumbnailOffsetAndLength(stream, &thumbnail_data);
+  GetThumbnailOffsetAndLength(TagSet(), stream, &thumbnail_data);
   preview_image_data->thumbnail_offset = thumbnail_data.thumbnail_offset;
   preview_image_data->thumbnail_length = thumbnail_data.thumbnail_length;
 
@@ -434,6 +472,31 @@ Error OrfGetPreviewData(StreamInterface* stream,
   return GetOlympusPreviewImage(stream, preview_image_data);
 }
 
+Error PefGetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  const TagSet extended_tags = {kTiffTagImageWidth, kTiffTagImageLength,
+                                kTiffTagJpegByteCount, kTiffTagJpegOffset,
+                                kTiffTagSubIfd};
+  const std::uint32_t kNumberOfIfds = 3;
+  Error error =
+      GetPreviewData(extended_tags, kNumberOfIfds, stream, preview_image_data);
+  if (error != kOk) {
+    return error;
+  }
+
+  error = PefGetColorSpace(stream, preview_image_data);
+  if (error != kOk) {
+    return error;
+  }
+
+  PreviewImageData thumbnail_data;
+  GetThumbnailOffsetAndLength(TagSet(), stream, &thumbnail_data);
+  preview_image_data->thumbnail_offset = thumbnail_data.thumbnail_offset;
+  preview_image_data->thumbnail_length = thumbnail_data.thumbnail_length;
+
+  return kOk;
+}
+
 Error RafGetPreviewData(StreamInterface* stream,
                         PreviewImageData* preview_image_data) {
   // Parse the Fuji RAW header to get the offset and length of the preview
@@ -464,6 +527,7 @@ Error RafGetPreviewData(StreamInterface* stream,
   // The preview offset and length extracted from the Exif data are actually
   // the thumbnail offset and length.
   preview_image_data->thumbnail_offset = preview_image_data->preview_offset;
+  preview_image_data->thumbnail_offset += 160;  // Skip the cfa header.
   preview_image_data->thumbnail_length = preview_image_data->preview_length;
   preview_image_data->preview_offset = preview_offset;
   preview_image_data->preview_length = preview_length;
@@ -493,13 +557,14 @@ Error Rw2GetPreviewData(StreamInterface* stream,
     if (GetExifData(exif_offset, stream, preview_image_data) == kFail) {
       return kFail;
     }
+    // The preview offset and length extracted from the Exif data are actually
+    // the thumbnail offset and length.
+    preview_image_data->thumbnail_offset =
+        exif_offset + preview_image_data->preview_offset;
+    preview_image_data->thumbnail_length = preview_image_data->preview_length;
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
-  // The preview offset and length extracted from the Exif data are actually
-  // the thumbnail offset and length.
-  preview_image_data->thumbnail_offset = preview_image_data->preview_offset;
-  preview_image_data->thumbnail_length = preview_image_data->preview_length;
   preview_image_data->preview_offset = preview_data.preview_offset;
   preview_image_data->preview_length = preview_data.preview_length;
   preview_image_data->iso = preview_data.iso;
@@ -507,6 +572,18 @@ Error Rw2GetPreviewData(StreamInterface* stream,
   preview_image_data->full_height = preview_data.full_height;
 
   return kOk;
+}
+
+Error SrwGetPreviewData(StreamInterface* stream,
+                        PreviewImageData* preview_image_data) {
+  GetThumbnailOffsetAndLength({kTiffTagSubIfd}, stream, preview_image_data);
+
+  const TagSet extended_tags = {kExifTagWidth, kExifTagHeight,
+                                kTiffTagJpegByteCount, kTiffTagJpegOffset,
+                                kTiffTagSubIfd};
+  const std::uint32_t kNumberOfIfds = 1;
+  return GetPreviewData(extended_tags, kNumberOfIfds, stream,
+                        preview_image_data);
 }
 
 }  // namespace
@@ -558,10 +635,14 @@ Error GetPreviewImageData(StreamInterface* data,
       return NefGetPreviewData(data, preview_image_data);
     case image_type_recognition::kOrfImage:
       return OrfGetPreviewData(data, preview_image_data);
+    case image_type_recognition::kPefImage:
+      return PefGetPreviewData(data, preview_image_data);
     case image_type_recognition::kRafImage:
       return RafGetPreviewData(data, preview_image_data);
     case image_type_recognition::kRw2Image:
       return Rw2GetPreviewData(data, preview_image_data);
+    case image_type_recognition::kSrwImage:
+      return SrwGetPreviewData(data, preview_image_data);
     default:
       return kUnsupported;
   }
@@ -575,8 +656,10 @@ std::vector<std::string> SupportedExtensions() {
   extensions.push_back("NEF");
   extensions.push_back("NRW");
   extensions.push_back("ORF");
+  extensions.push_back("PEF");
   extensions.push_back("RAF");
   extensions.push_back("RW2");
+  extensions.push_back("SRW");
   return extensions;
 }
 

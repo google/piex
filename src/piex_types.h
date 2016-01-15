@@ -29,8 +29,8 @@ enum Error {
   kUnsupported,
 };
 
-// Contains relevant image information as well as the 'jpeg_offset' and the
-// 'jpeg_length' which are used to obtain the JPEG compressed preview image.
+// Contains relevant image information as well as the 'preview_offset' and the
+// 'preview_length' which are used to obtain the JPEG compressed preview image.
 // 'full_width' and 'full_height' are correctly cropped but not rotated.
 struct PreviewImageData {
   enum ColorSpace {
