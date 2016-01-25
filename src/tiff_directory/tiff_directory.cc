@@ -219,7 +219,7 @@ bool TiffDirectory::GetOffsetAndLength(const Tag tag, const Type type,
     return false;
   }
   *offset = directory_entry->offset;
-  *length = directory_entry->value.size();
+  *length = static_cast<std::uint32_t>(directory_entry->value.size());
   return true;
 }
 

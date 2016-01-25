@@ -133,7 +133,7 @@ void FillGpsPreviewImageData(const TiffDirectory& gps_directory,
       return;
     }
 
-    constexpr size_t kGpsDateStampSize = 11;
+    const size_t kGpsDateStampSize = 11;
     if (!gps_directory.Get(kGpsTagDateStamp,
                            &preview_image_data->gps.date_stamp)) {
       return;
