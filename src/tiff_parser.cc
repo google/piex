@@ -89,7 +89,7 @@ bool GetFullDimension(const TiffDirectory& tiff_directory, std::uint32_t* width,
   return true;
 }
 
-bool GetRational(const Tags& tag, const TiffDirectory& directory,
+bool GetRational(const TiffDirectory::Tag& tag, const TiffDirectory& directory,
                  const int data_size, PreviewImageData::Rational* data) {
   std::vector<Rational> value;
   if (directory.Get(tag, &value)) {
@@ -252,7 +252,7 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
   return kOk;
 }
 
-const TiffDirectory* FindFirstTagInIfds(const Tags& tag,
+const TiffDirectory* FindFirstTagInIfds(const TiffDirectory::Tag& tag,
                                         const IfdVector& tiff_directory) {
   for (std::uint32_t i = 0; i < tiff_directory.size(); ++i) {
     if (tiff_directory[i].Has(tag)) {
@@ -322,11 +322,11 @@ bool Get32u(StreamInterface* stream, const std::uint32_t offset,
   std::uint8_t data[4];
   if (stream->GetData(offset, 4, data) == kOk) {
     if (endian == kBigEndian) {
-      *value = (data[0] * 0x1000000) | (data[1] * 0x10000) | (data[2] * 0x100) |
-               data[3];
+      *value = (data[0] * 0x1000000u) | (data[1] * 0x10000u) |
+               (data[2] * 0x100u) | data[3];
     } else {
-      *value = (data[3] * 0x1000000) | (data[2] * 0x10000) | (data[1] * 0x100) |
-               data[0];
+      *value = (data[3] * 0x1000000u) | (data[2] * 0x10000u) |
+               (data[1] * 0x100u) | data[0];
     }
     return true;
   } else {
@@ -431,7 +431,7 @@ Error ParseDirectory(const std::uint32_t tiff_offset,
         Get16u(stream, ifd_offset + 4 + i, endian, &type) &&
         Get32u(stream, ifd_offset + 6 + i, endian, &number_of_elements)) {
       // Check if the current tag should be handled.
-      if (desired_tags.count(static_cast<Tags>(tag)) != 1) {
+      if (desired_tags.count(static_cast<TiffDirectory::Tag>(tag)) != 1) {
         continue;
       }
     } else {
@@ -467,7 +467,7 @@ Error ParseDirectory(const std::uint32_t tiff_offset,
     tiff_directory->AddEntry(tag, type, number_of_elements, value_offset, data);
   }
 
-  if (Get32u(stream, ifd_offset + 2 + number_of_entries * 12, endian,
+  if (Get32u(stream, ifd_offset + 2u + number_of_entries * 12u, endian,
              next_ifd_offset)) {
     return kOk;
   } else {
@@ -525,9 +525,10 @@ Error TiffParser::Parse(const TagSet& desired_tags,
   }
 
   // Get the Exif data.
-  const TiffDirectory* tiff_ifd =
-      FindFirstTagInIfds(kTiffTagExifIfd, tiff_content->tiff_directory);
-  if (tiff_ifd != NULL) {
+  if (FindFirstTagInIfds(kTiffTagExifIfd, tiff_content->tiff_directory) !=
+      nullptr) {
+    const TiffDirectory* tiff_ifd =
+        FindFirstTagInIfds(kTiffTagExifIfd, tiff_content->tiff_directory);
     std::uint32_t offset;
     if (tiff_ifd->Get(kTiffTagExifIfd, &offset)) {
       tiff_content->exif_directory.reset(new TiffDirectory(endian_));
@@ -539,17 +540,16 @@ Error TiffParser::Parse(const TagSet& desired_tags,
         return error;
       }
 
-      if (tiff_ifd->Get(kExifTagGps, &offset)) {
-        tiff_content->gps_directory.reset(new TiffDirectory(endian_));
-        const TagSet gps_tags = {kGpsTagLatitudeRef,  kGpsTagLatitude,
-                                 kGpsTagLongitudeRef, kGpsTagLongitude,
-                                 kGpsTagAltitudeRef,  kGpsTagAltitude,
-                                 kGpsTagTimeStamp,    kGpsTagDateStamp};
-        return ParseDirectory(
-            tiff_offset_, tiff_offset_ + offset, endian_, gps_tags, stream_,
-            tiff_content->gps_directory.get(), &next_ifd_offset);
-      }
+      return ParseGpsData(tiff_ifd, tiff_content);
     }
+  }
+
+  // Get the GPS data from the tiff ifd.
+  if (FindFirstTagInIfds(kExifTagGps, tiff_content->tiff_directory) !=
+      nullptr) {
+    const TiffDirectory* tiff_ifd =
+        FindFirstTagInIfds(kExifTagGps, tiff_content->tiff_directory);
+    return ParseGpsData(tiff_ifd, tiff_content);
   }
 
   return error;
@@ -576,6 +576,23 @@ Error TiffParser::ParseIfd(const std::uint32_t offset_to_ifd,
   }
 
   return error;
+}
+
+Error TiffParser::ParseGpsData(const TiffDirectory* tiff_ifd,
+                               TiffContent* tiff_content) {
+  std::uint32_t offset;
+  if (tiff_ifd->Get(kExifTagGps, &offset)) {
+    tiff_content->gps_directory.reset(new TiffDirectory(endian_));
+    const TagSet gps_tags = {kGpsTagLatitudeRef,  kGpsTagLatitude,
+                             kGpsTagLongitudeRef, kGpsTagLongitude,
+                             kGpsTagAltitudeRef,  kGpsTagAltitude,
+                             kGpsTagTimeStamp,    kGpsTagDateStamp};
+    std::uint32_t next_ifd_offset;
+    return ParseDirectory(tiff_offset_, tiff_offset_ + offset, endian_,
+                          gps_tags, stream_, tiff_content->gps_directory.get(),
+                          &next_ifd_offset);
+  }
+  return kOk;
 }
 
 }  // namespace piex

@@ -91,8 +91,7 @@ enum TiffTags {
   kTiffTagYresolution = 0x011B,
 };
 
-typedef int Tags;
-typedef std::set<Tags> TagSet;
+typedef std::set<tiff_directory::TiffDirectory::Tag> TagSet;
 typedef std::vector<tiff_directory::TiffDirectory> IfdVector;
 
 struct TiffContent {
@@ -166,6 +165,8 @@ class TiffParser {
   Error ParseIfd(const std::uint32_t ifd_offset, const TagSet& desired_tags,
                  const std::uint16_t max_number_ifds,
                  IfdVector* tiff_directory);
+  Error ParseGpsData(const tiff_directory::TiffDirectory* tiff_ifd,
+                     TiffContent* tiff_content);
 
   StreamInterface* stream_ = nullptr;
   std::uint32_t tiff_offset_ = 0;

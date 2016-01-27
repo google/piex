@@ -217,7 +217,7 @@ void RangeCheckedBytePtr::loadPageForOffset(size_t offset) const {
   // Remember information about page.
   page_data_ = page_begin;
   page_begin_offset_ = page_index * array_->pageSize();
-  current_page_len_ = page_end - page_begin;
+  current_page_len_ = static_cast<size_t>(page_end - page_begin);
 
   // Restrict the boundaries of the page to lie within the sub-array.
   restrictPageToSubArray();
@@ -328,9 +328,9 @@ uint16 Get16u(const RangeCheckedBytePtr &input, const bool big_endian,
     return 0;
   }
   if (big_endian) {
-    return (input[0] << 8) | input[1];
+    return (static_cast<uint16>(input[0]) << 8) | static_cast<uint16>(input[1]);
   } else {
-    return (input[1] << 8) | input[0];
+    return (static_cast<uint16>(input[1]) << 8) | static_cast<uint16>(input[0]);
   }
 }
 
@@ -388,11 +388,15 @@ uint32 Get32u(const RangeCheckedBytePtr &input, const bool big_endian,
     return 0;
   }
   if (big_endian) {
-    return (input[0] << 24) | (input[1] << 16) | (input[2] << 8) |
-           (input[3] << 0);
+    return (static_cast<uint32>(input[0]) << 24) |
+           (static_cast<uint32>(input[1]) << 16) |
+           (static_cast<uint32>(input[2]) << 8) |
+           (static_cast<uint32>(input[3]) << 0);
   } else {
-    return (input[3] << 24) | (input[2] << 16) | (input[1] << 8) |
-           (input[0] << 0);
+    return (static_cast<uint32>(input[3]) << 24) |
+           (static_cast<uint32>(input[2]) << 16) |
+           (static_cast<uint32>(input[1]) << 8) |
+           (static_cast<uint32>(input[0]) << 0);
   }
 }
 

@@ -21,6 +21,8 @@
 
 #include "src/binary_parse/cached_paged_byte_array.h"
 
+#include <cstddef>
+
 namespace piex {
 namespace binary_parse {
 
@@ -41,7 +43,8 @@ void CachedPagedByteArray::getPage(size_t page_index,
     *page = cached_pages_[cache_index].page;
 
     // Remove the page to insert it at the end of the cache later.
-    cached_pages_.erase(cached_pages_.begin() + cache_index);
+    cached_pages_.erase(cached_pages_.begin() +
+                        static_cast<std::ptrdiff_t>(cache_index));
   } else {
     // Cache miss, ask PagedByteArray to load the page.
     paged_byte_array_->getPage(page_index, begin, end, page);

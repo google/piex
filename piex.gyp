@@ -28,7 +28,10 @@
     ],
   },
   'include_dirs': ['.'],
-  'cflags': ['-Wsign-compare'],
+  'cflags': [
+    '-Wsign-compare',
+    '-Wsign-conversion',
+  ],
   'dependencies': [
     'binary_parse',
     'image_type_recognition',
@@ -48,7 +51,10 @@
     ],
   },
   'include_dirs': ['.'],
-  'cflags': ['-Wsign-compare'],
+  'cflags': [
+    '-Wsign-compare',
+    '-Wsign-conversion',
+  ],
 }, {
   'target_name': 'image_type_recognition',
   'type': 'static_library',
@@ -59,11 +65,18 @@
     'headers': ['src/image_type_recognition/image_type_recognition_lite.h'],
   },
   'include_dirs': ['.'],
-  'cflags': ['-Wsign-compare'],
+  'cflags': [
+    '-Wsign-compare',
+    '-Wsign-conversion',
+  ],
   'dependencies': ['binary_parse'],
 }, {
   'target_name': 'tiff_directory',
   'type': 'static_library',
+  'cflags': [
+    '-Wsign-compare',
+    '-Wsign-conversion',
+  ],
   'sources': [
     'src/tiff_directory/tiff_directory.cc',
   ],

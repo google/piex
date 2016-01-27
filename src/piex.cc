@@ -328,7 +328,7 @@ bool RafGetDimension(StreamInterface* stream, std::uint32_t* width,
       *height = tmp_height;
       return true;
     }
-    cfa_header_index += 4 + length;
+    cfa_header_index += 4u + length;
   }
   return false;
 }
