@@ -31,6 +31,7 @@
   'cflags': [
     '-Wsign-compare',
     '-Wsign-conversion',
+    '-Wunused-parameter',
   ],
   'dependencies': [
     'binary_parse',
@@ -54,6 +55,7 @@
   'cflags': [
     '-Wsign-compare',
     '-Wsign-conversion',
+    '-Wunused-parameter',
   ],
 }, {
   'target_name': 'image_type_recognition',
@@ -68,6 +70,7 @@
   'cflags': [
     '-Wsign-compare',
     '-Wsign-conversion',
+    '-Wunused-parameter',
   ],
   'dependencies': ['binary_parse'],
 }, {
@@ -76,6 +79,7 @@
   'cflags': [
     '-Wsign-compare',
     '-Wsign-conversion',
+    '-Wunused-parameter',
   ],
   'sources': [
     'src/tiff_directory/tiff_directory.cc',

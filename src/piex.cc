@@ -43,8 +43,9 @@ Error GetPreviewData(const TagSet& extended_tags,
                          kExifTagExposureTime, kExifTagFnumber,
                          kExifTagFocalLength,  kExifTagGps,
                          kExifTagIsoSpeed,     kTiffTagDateTime,
-                         kTiffTagExifIfd,      kTiffTagMake,
-                         kTiffTagModel,        kTiffTagOrientation};
+                         kTiffTagExifIfd,      kTiffTagCfaPatternDim,
+                         kTiffTagMake,         kTiffTagModel,
+                         kTiffTagOrientation};
   desired_tags.insert(extended_tags.cbegin(), extended_tags.cend());
 
   TiffParser tiff_parser(stream, tiff_offset);
@@ -118,6 +119,28 @@ Error GetExifIfd(const Endian endian, StreamInterface* stream,
 
   return ParseDirectory(kTiffOffset, exif_offset, endian, {kExifTagMakernotes},
                         stream, exif_ifd, &next_ifd_offset);
+}
+
+bool GetImageFromIfd(const TiffDirectory& ifd, std::uint32_t* offset,
+                     std::uint32_t* length) {
+  std::uint32_t compression;
+  std::uint32_t photometric_interpretation;
+  if (ifd.Get(kTiffTagPhotometric, &photometric_interpretation) &&
+      ifd.Get(kTiffTagCompression, &compression)) {
+    if (photometric_interpretation == 6 /* YCbCr */ &&
+        (compression == 6 /* JPEG(old) */ || compression == 7 /* JPEG */)) {
+      std::vector<std::uint32_t> strip_offsets;
+      std::vector<std::uint32_t> byte_counts;
+      if (ifd.Get(kTiffTagStripOffsets, &strip_offsets) &&
+          ifd.Get(kTiffTagStripByteCounts, &byte_counts) &&
+          strip_offsets.size() == 1 && byte_counts.size() == 1) {
+        *length = byte_counts[0];
+        *offset = strip_offsets[0];
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 Error GetMakernoteIfd(const TiffDirectory& exif_ifd, const Endian endian,
@@ -377,28 +400,25 @@ Error DngGetPreviewData(StreamInterface* stream,
   std::uint32_t preview_offset = 0;
   std::uint32_t thumbnail_length = std::numeric_limits<std::uint32_t>::max();
   std::uint32_t thumbnail_offset = std::numeric_limits<std::uint32_t>::max();
+
+  std::uint32_t length = 0;
+  std::uint32_t offset = 0;
+  if (GetImageFromIfd(tiff_content.tiff_directory[0], &offset, &length)) {
+    preview_length = length;
+    preview_offset = offset;
+    thumbnail_length = length;
+    thumbnail_offset = offset;
+  }
+
   for (const auto& ifd : tiff_content.tiff_directory[0].GetSubDirectories()) {
-    std::uint32_t compression;
-    std::uint32_t photometric_interpretation;
-    if (!ifd.Get(kTiffTagPhotometric, &photometric_interpretation) ||
-        !ifd.Get(kTiffTagCompression, &compression)) {
-      continue;
-    }
-    if (photometric_interpretation == 6 /* YCbCr */ &&
-        (compression == 6 /* JPEG(old) */ || compression == 7 /* JPEG */)) {
-      std::vector<std::uint32_t> strip_offsets;
-      std::vector<std::uint32_t> byte_counts;
-      if (ifd.Get(kTiffTagStripOffsets, &strip_offsets) &&
-          ifd.Get(kTiffTagStripByteCounts, &byte_counts) &&
-          strip_offsets.size() == 1 && byte_counts.size() == 1) {
-        if (byte_counts[0] > preview_length) {
-          preview_length = byte_counts[0];
-          preview_offset = strip_offsets[0];
-        }
-        if (byte_counts[0] < thumbnail_length) {
-          thumbnail_length = byte_counts[0];
-          thumbnail_offset = strip_offsets[0];
-        }
+    if (GetImageFromIfd(ifd, &offset, &length)) {
+      if (length > preview_length) {
+        preview_length = length;
+        preview_offset = offset;
+      }
+      if (length < thumbnail_length) {
+        thumbnail_length = length;
+        thumbnail_offset = offset;
       }
     }
   }
@@ -649,18 +669,7 @@ Error GetPreviewImageData(StreamInterface* data,
 }
 
 std::vector<std::string> SupportedExtensions() {
-  std::vector<std::string> extensions;
-  extensions.push_back("ARW");
-  extensions.push_back("CR2");
-  extensions.push_back("DNG");
-  extensions.push_back("NEF");
-  extensions.push_back("NRW");
-  extensions.push_back("ORF");
-  extensions.push_back("PEF");
-  extensions.push_back("RAF");
-  extensions.push_back("RW2");
-  extensions.push_back("SRW");
-  return extensions;
+  return {"ARW", "CR2", "DNG", "NEF", "NRW", "ORF", "PEF", "RAF", "RW2", "SRW"};
 }
 
 }  // namespace piex

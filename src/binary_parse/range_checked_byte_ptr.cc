@@ -52,12 +52,10 @@ size_t MemoryPagedByteArray::length() const { return len_; }
 
 size_t MemoryPagedByteArray::pageSize() const { return len_; }
 
-void MemoryPagedByteArray::getPage(size_t page_index,
+void MemoryPagedByteArray::getPage(size_t /* page_index */,
                                    const unsigned char **begin,
                                    const unsigned char **end,
                                    PagePtr *page) const {
-  assert(page_index == 0);
-
   *begin = buffer_;
   *end = buffer_ + len_;
   *page = PagePtr();
@@ -68,7 +66,7 @@ void MemoryPagedByteArray::getPage(size_t page_index,
 class NullFunctor {
  public:
   void operator()() {}
-  void operator()(PagedByteArray *p) const {}
+  void operator()(PagedByteArray * /* p */) const {}
 };
 }  // namespace
 

@@ -63,6 +63,7 @@ enum TiffTags {
   kPentaxTagColorSpace = 0x0037,
   kTiffTagArtist = 0x013B,
   kTiffTagBitsPerSample = 0x0102,
+  kTiffTagCfaPatternDim = 0x828D,
   kTiffTagCompression = 0x0103,
   kTiffTagDateTime = 0x0132,
   kTiffTagExifIfd = 0x8769,

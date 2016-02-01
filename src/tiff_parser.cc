@@ -92,7 +92,8 @@ bool GetFullDimension(const TiffDirectory& tiff_directory, std::uint32_t* width,
 bool GetRational(const TiffDirectory::Tag& tag, const TiffDirectory& directory,
                  const int data_size, PreviewImageData::Rational* data) {
   std::vector<Rational> value;
-  if (directory.Get(tag, &value)) {
+  if (directory.Get(tag, &value) &&
+      value.size() == static_cast<size_t>(data_size)) {
     for (size_t i = 0; i < value.size(); ++i) {
       data[i].numerator = value[i].numerator;
       data[i].denominator = value[i].denominator;
@@ -217,6 +218,15 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
 
   if (tiff_directory.Has(kTiffTagModel)) {
     success &= tiff_directory.Get(kTiffTagModel, &preview_image_data->model);
+  }
+
+  if (tiff_directory.Has(kTiffTagCfaPatternDim)) {
+    std::vector<std::uint32_t> cfa_pattern_dim;
+    if (tiff_directory.Get(kTiffTagCfaPatternDim, &cfa_pattern_dim) &&
+        cfa_pattern_dim.size() == 2) {
+      preview_image_data->cfa_pattern_dim[0] = cfa_pattern_dim[0];
+      preview_image_data->cfa_pattern_dim[1] = cfa_pattern_dim[1];
+    }
   }
 
   if (tiff_directory.Has(kExifTagDateTimeOriginal)) {
