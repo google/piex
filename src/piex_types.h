@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace piex {
 
@@ -81,7 +82,7 @@ struct PreviewImageData {
 
   // Hint for the mosaic pattern dimension of the RAW image data. (0, 0) implies
   // that no mosaic info found. It is valid for DNG, NEF and NRW files.
-  std::uint32_t cfa_pattern_dim[2] = {0, 0};
+  std::vector<std::uint32_t> cfa_pattern_dim = std::vector<std::uint32_t>(2, 0);
 };
 
 // Defines the StreamInterface that needs to be implemented by the client.
