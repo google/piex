@@ -121,8 +121,26 @@ Error GetExifIfd(const Endian endian, StreamInterface* stream,
                         stream, exif_ifd, &next_ifd_offset);
 }
 
-bool GetImageFromIfd(const TiffDirectory& ifd, std::uint32_t* offset,
-                     std::uint32_t* length) {
+struct Image {
+  std::uint16_t width = 0;
+  std::uint16_t height = 0;
+  std::uint32_t length = 0;
+  std::uint32_t offset = 0;
+
+  bool operator>(const Image& rhs) const {
+    return width > rhs.width && height > rhs.height;
+  }
+};
+
+bool IsThumbnail(const Image& image) {
+  // According to Tiff/EP a thumbnail has max 256 pixels per dimension.
+  // http://standardsproposals.bsigroup.com/Home/getPDF/567
+  const std::uint16_t kThumbnailAxis = 256;
+  return image.width <= kThumbnailAxis && image.height <= kThumbnailAxis;
+}
+
+bool GetImageFromIfd(const TiffDirectory& ifd, StreamInterface* stream,
+                     Image* image) {
   std::uint32_t compression;
   std::uint32_t photometric_interpretation;
   if (ifd.Get(kTiffTagPhotometric, &photometric_interpretation) &&
@@ -134,9 +152,10 @@ bool GetImageFromIfd(const TiffDirectory& ifd, std::uint32_t* offset,
       if (ifd.Get(kTiffTagStripOffsets, &strip_offsets) &&
           ifd.Get(kTiffTagStripByteCounts, &byte_counts) &&
           strip_offsets.size() == 1 && byte_counts.size() == 1) {
-        *length = byte_counts[0];
-        *offset = strip_offsets[0];
-        return true;
+        image->length = byte_counts[0];
+        image->offset = strip_offsets[0];
+        return GetPreviewDimensions(image->offset, stream, &image->width,
+                                    &image->height);
       }
     }
   }
@@ -395,41 +414,41 @@ Error DngGetPreviewData(StreamInterface* stream,
     return error;
   }
 
-  // Find the largest and smallest jpeg compressed preview image.
-  std::uint32_t preview_length = 0;
-  std::uint32_t preview_offset = 0;
-  std::uint32_t thumbnail_length = std::numeric_limits<std::uint32_t>::max();
-  std::uint32_t thumbnail_offset = std::numeric_limits<std::uint32_t>::max();
+  // Find the jpeg compressed thumbnail and preview image.
+  Image preview;
+  Image thumbnail;
 
-  std::uint32_t length = 0;
-  std::uint32_t offset = 0;
-  if (GetImageFromIfd(tiff_content.tiff_directory[0], &offset, &length)) {
-    preview_length = length;
-    preview_offset = offset;
-    thumbnail_length = length;
-    thumbnail_offset = offset;
+  // Search for images in IFD0
+  Image temp_image;
+  if (GetImageFromIfd(tiff_content.tiff_directory[0], stream, &temp_image)) {
+    if (IsThumbnail(temp_image)) {
+      thumbnail = temp_image;
+    } else {
+      preview = temp_image;
+    }
   }
 
+  // Search for images in other IFDs
   for (const auto& ifd : tiff_content.tiff_directory[0].GetSubDirectories()) {
-    if (GetImageFromIfd(ifd, &offset, &length)) {
-      if (length > preview_length) {
-        preview_length = length;
-        preview_offset = offset;
-      }
-      if (length < thumbnail_length) {
-        thumbnail_length = length;
-        thumbnail_offset = offset;
+    if (GetImageFromIfd(ifd, stream, &temp_image)) {
+      // Try to find the largest thumbnail/preview.
+      if (IsThumbnail(temp_image)) {
+        if (temp_image > thumbnail) {
+          thumbnail = temp_image;
+        }
+      } else {
+        if (temp_image > preview) {
+          preview = temp_image;
+        }
       }
     }
   }
-  preview_image_data->preview_length = preview_length;
-  preview_image_data->preview_offset = preview_offset;
 
-  // A thumbnail image is supposed to be smaller compared to the preview.
-  if (thumbnail_length < preview_length) {
-    preview_image_data->thumbnail_length = thumbnail_length;
-    preview_image_data->thumbnail_offset = thumbnail_offset;
-  }
+  preview_image_data->preview_length = preview.length;
+  preview_image_data->preview_offset = preview.offset;
+  preview_image_data->thumbnail_length = thumbnail.length;
+  preview_image_data->thumbnail_offset = thumbnail.offset;
+
   return kOk;
 }
 
