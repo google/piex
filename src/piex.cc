@@ -90,6 +90,8 @@ void GetThumbnailOffsetAndLength(const TagSet& extended_tags,
   PreviewImageData thumbnail_data;
   if (GetPreviewData(desired_tags, kNumberOfIfds, stream, &thumbnail_data) ==
       kOk) {
+    preview_image_data->thumbnail = thumbnail_data.preview;
+    // TODO: remove the old vars.
     preview_image_data->thumbnail_offset = thumbnail_data.preview_offset;
     preview_image_data->thumbnail_length = thumbnail_data.preview_length;
   }
@@ -120,17 +122,6 @@ Error GetExifIfd(const Endian endian, StreamInterface* stream,
   return ParseDirectory(kTiffOffset, exif_offset, endian, {kExifTagMakernotes},
                         stream, exif_ifd, &next_ifd_offset);
 }
-
-struct Image {
-  std::uint16_t width = 0;
-  std::uint16_t height = 0;
-  std::uint32_t length = 0;
-  std::uint32_t offset = 0;
-
-  bool operator>(const Image& rhs) const {
-    return width > rhs.width && height > rhs.height;
-  }
-};
 
 bool IsThumbnail(const Image& image) {
   // According to Tiff/EP a thumbnail has max 256 pixels per dimension.
@@ -256,10 +247,13 @@ Error GetOlympusPreviewImage(StreamInterface* stream,
   if (makernote_ifd.Has(kThumbnailTag)) {
     if (!makernote_ifd.GetOffsetAndLength(
             kThumbnailTag, tiff_directory::TIFF_TYPE_UNDEFINED,
-            &preview_image_data->thumbnail_offset,
-            &preview_image_data->thumbnail_length)) {
+            &preview_image_data->thumbnail.offset,
+            &preview_image_data->thumbnail.length)) {
       return kFail;
     }
+    // TODO: remove the old vars.
+    preview_image_data->thumbnail_offset = preview_image_data->thumbnail.offset;
+    preview_image_data->thumbnail_length = preview_image_data->thumbnail.length;
   }
 
   TiffDirectory camera_settings_ifd(endian);
@@ -276,9 +270,12 @@ Error GetOlympusPreviewImage(StreamInterface* stream,
     return kUnsupported;
   }
 
-  camera_settings_ifd.Get(kPreviewOffset, &preview_image_data->preview_offset);
-  preview_image_data->preview_offset += makernote_offset;
-  camera_settings_ifd.Get(kPreviewLength, &preview_image_data->preview_length);
+  camera_settings_ifd.Get(kPreviewOffset, &preview_image_data->preview.offset);
+  preview_image_data->preview.offset += makernote_offset;
+  camera_settings_ifd.Get(kPreviewLength, &preview_image_data->preview.length);
+  // TODO: remove the old vars.
+  preview_image_data->preview_offset = preview_image_data->preview.offset;
+  preview_image_data->preview_length = preview_image_data->preview.length;
 
   // Get the crop size from the raw processing ifd.
   TiffDirectory raw_processing_ifd(endian);
@@ -443,7 +440,9 @@ Error DngGetPreviewData(StreamInterface* stream,
       }
     }
   }
-
+  preview_image_data->preview = preview;
+  preview_image_data->thumbnail = thumbnail;
+  // TODO: remove the old vars.
   preview_image_data->preview_length = preview.length;
   preview_image_data->preview_offset = preview.offset;
   preview_image_data->thumbnail_length = thumbnail.length;
@@ -466,6 +465,8 @@ Error NefGetPreviewData(StreamInterface* stream,
 
   PreviewImageData thumbnail_data;
   GetThumbnailOffsetAndLength(TagSet(), stream, &thumbnail_data);
+  preview_image_data->thumbnail = thumbnail_data.thumbnail;
+  // TODO: remove the old vars.
   preview_image_data->thumbnail_offset = thumbnail_data.thumbnail_offset;
   preview_image_data->thumbnail_length = thumbnail_data.thumbnail_length;
 
@@ -530,6 +531,8 @@ Error PefGetPreviewData(StreamInterface* stream,
 
   PreviewImageData thumbnail_data;
   GetThumbnailOffsetAndLength(TagSet(), stream, &thumbnail_data);
+  preview_image_data->thumbnail = thumbnail_data.thumbnail;
+  // TODO: remove the old vars.
   preview_image_data->thumbnail_offset = thumbnail_data.thumbnail_offset;
   preview_image_data->thumbnail_length = thumbnail_data.thumbnail_length;
 
@@ -565,11 +568,15 @@ Error RafGetPreviewData(StreamInterface* stream,
   // Merge the Exif data with the RAW data to form the preview_image_data.
   // The preview offset and length extracted from the Exif data are actually
   // the thumbnail offset and length.
-  preview_image_data->thumbnail_offset = preview_image_data->preview_offset;
-  preview_image_data->thumbnail_offset += 160;  // Skip the cfa header.
-  preview_image_data->thumbnail_length = preview_image_data->preview_length;
-  preview_image_data->preview_offset = preview_offset;
-  preview_image_data->preview_length = preview_length;
+  preview_image_data->thumbnail = preview_image_data->preview;
+  preview_image_data->thumbnail.offset += 160;  // Skip the cfa header.
+  preview_image_data->preview.offset = preview_offset;
+  preview_image_data->preview.length = preview_length;
+  // TODO: remove the old vars.
+  preview_image_data->thumbnail_offset = preview_image_data->thumbnail.offset;
+  preview_image_data->thumbnail_length = preview_image_data->thumbnail.length;
+  preview_image_data->preview_offset = preview_image_data->preview.offset;
+  preview_image_data->preview_length = preview_image_data->preview.length;
   return kOk;
 }
 
@@ -598,17 +605,21 @@ Error Rw2GetPreviewData(StreamInterface* stream,
     }
     // The preview offset and length extracted from the Exif data are actually
     // the thumbnail offset and length.
-    preview_image_data->thumbnail_offset =
-        exif_offset + preview_image_data->preview_offset;
-    preview_image_data->thumbnail_length = preview_image_data->preview_length;
+    preview_image_data->thumbnail = preview_image_data->preview;
+    preview_image_data->thumbnail.offset += exif_offset;
+    // TODO: remove old vars.
+    preview_image_data->thumbnail_offset = preview_image_data->thumbnail.offset;
+    preview_image_data->thumbnail_length = preview_image_data->thumbnail.length;
   }
 
   // Merge the Exif data with the RAW data to form the preview_image_data.
-  preview_image_data->preview_offset = preview_data.preview_offset;
-  preview_image_data->preview_length = preview_data.preview_length;
+  preview_image_data->preview = preview_data.preview;
   preview_image_data->iso = preview_data.iso;
   preview_image_data->full_width = preview_data.full_width;
   preview_image_data->full_height = preview_data.full_height;
+  // TODO: remove old vars.
+  preview_image_data->preview_offset = preview_image_data->preview.offset;
+  preview_image_data->preview_length = preview_image_data->preview.length;
 
   return kOk;
 }

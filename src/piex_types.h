@@ -30,6 +30,25 @@ enum Error {
   kUnsupported,
 };
 
+// Defines the properties of an image. width and height are required for
+// uncompressed images, but are optional for compressed images. An image is
+// invalid when its length is 0.
+struct Image {
+  enum Format {
+    kJpegCompressed,
+  };
+
+  std::uint16_t width = 0;
+  std::uint16_t height = 0;
+  std::uint32_t length = 0;
+  std::uint32_t offset = 0;
+  Format format = kJpegCompressed;
+
+  bool operator>(const Image& rhs) const {
+    return width > rhs.width && height > rhs.height;
+  }
+};
+
 // Contains relevant image information as well as the 'preview_offset' and the
 // 'preview_length' which are used to obtain the JPEG compressed preview image.
 // 'full_width' and 'full_height' are correctly cropped but not rotated.
@@ -61,10 +80,15 @@ struct PreviewImageData {
   // correctly. A thumbnail is typically 160x120 pixel small and usually
   // has black borders at the top and bottom. If length is 0 the image could not
   // be extracted.
+  // Note: Deprecate the offset, length versions. Use these Image structs
+  // instead.
   std::uint32_t preview_offset = 0;
   std::uint32_t preview_length = 0;
   std::uint32_t thumbnail_offset = 0;
   std::uint32_t thumbnail_length = 0;
+  Image preview;
+  Image thumbnail;
+
   std::uint32_t exif_orientation = 1;  // horizontal as default
   ColorSpace color_space = kSrgb;
 

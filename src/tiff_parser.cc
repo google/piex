@@ -173,22 +173,32 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
       return kFail;
     }
     if (strip_offsets.size() == 1 && strip_byte_counts.size() == 1) {
+      preview_image_data->preview.offset = strip_offsets[0];
+      preview_image_data->preview.length = strip_byte_counts[0];
+      // TODO: remove old vars.
       preview_image_data->preview_offset = strip_offsets[0];
       preview_image_data->preview_length = strip_byte_counts[0];
     }
   } else if (tiff_directory.Has(kTiffTagJpegOffset) &&
              tiff_directory.Has(kTiffTagJpegByteCount)) {
     success &= tiff_directory.Get(kTiffTagJpegOffset,
-                                  &preview_image_data->preview_offset);
+                                  &preview_image_data->preview.offset);
     success &= tiff_directory.Get(kTiffTagJpegByteCount,
-                                  &preview_image_data->preview_length);
+                                  &preview_image_data->preview.length);
+    // TODO: remove old vars.
+    preview_image_data->preview_offset = preview_image_data->preview.offset;
+    preview_image_data->preview_length = preview_image_data->preview.length;
+
   } else if (tiff_directory.Has(kPanaTagJpegImage)) {
     if (!tiff_directory.GetOffsetAndLength(
             kPanaTagJpegImage, TIFF_TYPE_UNDEFINED,
-            &preview_image_data->preview_offset,
-            &preview_image_data->preview_length)) {
+            &preview_image_data->preview.offset,
+            &preview_image_data->preview.length)) {
       return kFail;
     }
+    // TODO: remove old vars.
+    preview_image_data->preview_offset = preview_image_data->preview.offset;
+    preview_image_data->preview_length = preview_image_data->preview.length;
   }
 
   // Get exif_orientation if it was not set already.
