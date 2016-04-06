@@ -36,6 +36,7 @@ enum Error {
 struct Image {
   enum Format {
     kJpegCompressed,
+    kUncompressedRgb,
   };
 
   std::uint16_t width = 0;
@@ -80,12 +81,6 @@ struct PreviewImageData {
   // correctly. A thumbnail is typically 160x120 pixel small and usually
   // has black borders at the top and bottom. If length is 0 the image could not
   // be extracted.
-  // Note: Deprecate the offset, length versions. Use these Image structs
-  // instead.
-  std::uint32_t preview_offset = 0;
-  std::uint32_t preview_length = 0;
-  std::uint32_t thumbnail_offset = 0;
-  std::uint32_t thumbnail_length = 0;
   Image preview;
   Image thumbnail;
 

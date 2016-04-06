@@ -16,7 +16,6 @@
 //
 // The purpose of the preview-image-extractor (piex) is to find and extract the
 // largest JPEG compressed preview image contained in a RAW file.
-// For details: go/piex
 //
 // Even for unsupported RAW files we want to provide high quality images using a
 // dedicated, small and portable library. That is possible by taking the preview
@@ -73,6 +72,16 @@ bool IsRaw(StreamInterface* data);
 // existance of a preview image.
 Error GetPreviewImageData(StreamInterface* data,
                           PreviewImageData* preview_image_data);
+
+// Returns true if the full width and height and the mosaic pattern dimension of
+// a DNG image could be obtained. False otherwise.
+bool GetDngInformation(StreamInterface* data, std::uint32_t* width,
+                       std::uint32_t* height,
+                       std::vector<std::uint32_t>* cfa_pattern_dim);
+
+// Returns true if Exif orientation for the image can be obtained. False
+// otherwise.
+bool GetOrientation(StreamInterface* data, std::uint32_t* orientation);
 
 // Returns a vector of upper case file extensions, which are used as a first
 // step to quickly guess a supported file format.

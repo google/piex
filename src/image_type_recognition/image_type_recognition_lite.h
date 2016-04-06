@@ -61,6 +61,10 @@ enum RawImageTypes {
 // Checks if the given type is a RAW image type.
 bool IsRaw(const RawImageTypes type);
 
+// Checks if the given source is from given type.
+bool IsOfType(const binary_parse::RangeCheckedBytePtr& source,
+              const RawImageTypes type);
+
 // This function will check the source and return the corresponding image type.
 // If the source is not a recognizable type, this function will return
 // kNonRawImage.
@@ -70,6 +74,10 @@ RawImageTypes RecognizeRawImageTypeLite(
 // Returns the maximum number of bytes needed to recognize a RAW image type in
 // IsRawLite().
 size_t GetNumberOfBytesForIsRawLite();
+
+// Returns the maximum number of bytes needed to recognize a RAF image type in
+// IsOfType().
+size_t GetNumberOfBytesForIsOfType(const RawImageTypes type);
 
 // This function will check if the source belongs to one of the known RAW types.
 bool IsRawLite(const binary_parse::RangeCheckedBytePtr& source);

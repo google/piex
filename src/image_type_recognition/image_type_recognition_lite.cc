@@ -61,6 +61,13 @@ class TypeChecker {
 
   // Checks if source data belongs to current checker type.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const = 0;
+
+ protected:
+  // Limits the source length to the RequestedSize(), using it guarantees that
+  // we will not read more than this size from the source.
+  RangeCheckedBytePtr LimitSource(const RangeCheckedBytePtr& source) const {
+    return source.pointerToSubArray(0 /* pos */, RequestedSize());
+  }
 };
 
 // Check if the uint16 value at (source + offset) is equal to the target value.
@@ -150,10 +157,7 @@ class ArwTypeChecker : public TypeChecker {
   // 3. signature "SONY" in first requested bytes;
   // 4. correct signature for (section + version) in first requested bytes.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -209,10 +213,7 @@ class Cr2TypeChecker : public TypeChecker {
   // 2. magic number "42" at the (offset == 2) position of the file;
   // 3. signature "CR2" at the (offset == 8) position of the file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -239,10 +240,7 @@ class CrwTypeChecker : public TypeChecker {
 
   // Check only the signature at the (offset == 6) position of the file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -271,10 +269,7 @@ class DcrTypeChecker : public TypeChecker {
   // 2. two tags (OriginalFileName and FirmwareVersion) can be found in the
   // first requested bytes of the file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -316,10 +311,7 @@ class DngTypeChecker : public TypeChecker {
   // 2. at least two dng specific tags in the first requested bytes of the
   // file
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -370,10 +362,7 @@ class KdcTypeChecker : public TypeChecker {
   // 1. valid endianness at the beginning of the file;
   // 2. two tags (WhiteBalance and SerialNumber) in the first requested bytes.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -410,10 +399,7 @@ class MosTypeChecker : public TypeChecker {
   // 2. signature "PKTS    " in the first requested bytes. Note the
   // "whitespace". It's important as they are special binary values.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(source, &use_big_endian)) {
@@ -498,10 +484,7 @@ class NefTypeChecker : public TypeChecker {
   // special images that the signature locates in the middle of the file, and it
   // costs too  long time to check;
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -537,10 +520,7 @@ class NrwTypeChecker : public TypeChecker {
   // 4. the ReferenceBlackWhite tag in the requested bytes of the file;
   // 5. contains the NRW signature;
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -573,10 +553,7 @@ class OrfTypeChecker : public TypeChecker {
   // 2. tag at the (offset == 2) position of the file;
   // 3. signature "OLYMP" in the first requested bytes.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -611,10 +588,7 @@ class PefTypeChecker : public TypeChecker {
   // 2. magic numbers at the (offset == 2 and offset==4) positions of the file;
   // 3. signature "AOC   " or "PENTAX  " in first requested bytes.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(limited_source, &use_big_endian)) {
@@ -649,10 +623,7 @@ class QtkTypeChecker : public TypeChecker {
 
   // Check only the signature at the beginning of the file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     const size_t kSignatureSize = 2;
     const string kSignature[kSignatureSize] = {
@@ -672,10 +643,7 @@ class RafTypeChecker : public TypeChecker {
 
   // Check only the signature at the beginning of the file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     const string kSignature("FUJIFILM");
     return IsSignatureMatched(limited_source, 0 /* offset */, kSignature);
@@ -692,10 +660,7 @@ class RawContaxNTypeChecker : public TypeChecker {
   // Check only the signature at the (offset == 25) position of the
   // file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     const string kSignature("ARECOYK");
     return IsSignatureMatched(limited_source, 25, kSignature);
@@ -712,10 +677,7 @@ class Rw2TypeChecker : public TypeChecker {
   // Check two points: 1. valid endianness at the beginning of the
   // file; 2. tag at the (offset == 2) position of the file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(source, &use_big_endian)) {
@@ -740,10 +702,7 @@ class SrwTypeChecker : public TypeChecker {
   // 2. magic numbers at the (offset == 2 and offset==4) positions of the file;
   // 3. the signature "SAMSUNG" in the requested bytes of the file;
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
     if (!DetermineEndianness(source, &use_big_endian)) {
@@ -776,10 +735,7 @@ class X3fTypeChecker : public TypeChecker {
 
   // Check only the signature at the beginning of the file.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
-    // Limits the source length to the RequestedSize(), using it guarantees that
-    // we will not read more than this size from the source.
-    RangeCheckedBytePtr limited_source =
-        source.pointerToSubArray(0 /* pos */, RequestedSize());
+    RangeCheckedBytePtr limited_source = LimitSource(source);
 
     const string kSignature("FOVb", 4);
     return IsSignatureMatched(limited_source, 0 /* offset */, kSignature);
@@ -843,7 +799,34 @@ class TypeCheckerList {
     return checkers_.back()->RequestedSize();
   }
 
+  bool IsOfType(const RangeCheckedBytePtr& source, const RawImageTypes type) {
+    const TypeChecker* type_checker = GetTypeCheckerForType(type);
+    if (type_checker) {
+      return type_checker->IsMyType(source);
+    } else {
+      return false;
+    }
+  }
+
+  size_t RequestedSizeForType(const RawImageTypes type) {
+    const TypeChecker* type_checker = GetTypeCheckerForType(type);
+    if (type_checker) {
+      return type_checker->RequestedSize();
+    } else {
+      return 0;
+    }
+  }
+
  private:
+  const TypeChecker* GetTypeCheckerForType(const RawImageTypes type) {
+    for (const auto* type_checker : checkers_) {
+      if (type_checker->Type() == type) {
+        return type_checker;
+      }
+    }
+    return nullptr;
+  }
+
   std::vector<TypeChecker*> checkers_;
 };
 
@@ -886,12 +869,20 @@ bool IsRaw(const RawImageTypes type) {
   return false;
 }
 
+bool IsOfType(const RangeCheckedBytePtr& source, const RawImageTypes type) {
+  return TypeCheckerList().IsOfType(source, type);
+}
+
 RawImageTypes RecognizeRawImageTypeLite(const RangeCheckedBytePtr& source) {
   return TypeCheckerList().GetType(source);
 }
 
 size_t GetNumberOfBytesForIsRawLite() {
   return TypeCheckerList().RequestedSize();
+}
+
+size_t GetNumberOfBytesForIsOfType(const RawImageTypes type) {
+  return TypeCheckerList().RequestedSizeForType(type);
 }
 
 bool IsRawLite(const RangeCheckedBytePtr& source) {

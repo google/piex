@@ -27,6 +27,9 @@
 
 namespace piex {
 
+// Specifies the maximum number of pixels for thumbnails in each direction.
+const int kThumbnailMaxDimension = 256;
+
 // Specifies all tags that might be of interest to get the preview data.
 enum GpsTags {
   kGpsTagLatitudeRef = 1,
@@ -83,6 +86,7 @@ enum TiffTags {
   kTiffTagSoftware = 0x0131,
   kTiffTagStripByteCounts = 0x0117,
   kTiffTagStripOffsets = 0x0111,
+  kTiffTagSubFileType = 0x00FE,
   kTiffTagSubIfd = 0x014A,
   kTiffTagTileByteCounts = 0x0145,
   kTiffTagTileLength = 0x0143,
@@ -120,25 +124,43 @@ std::vector<std::uint8_t> GetData(const size_t offset, const size_t length,
                                   StreamInterface* stream, Error* error);
 
 // Retrieves the endianness of TIFF compliant data at 'tiff_offset' from
-// 'stream' returning true on success. Returns false if when something is wrong.
+// 'stream' returning true on success. Returns false when something is wrong.
 bool GetEndianness(const std::uint32_t tiff_offset, StreamInterface* stream,
                    tiff_directory::Endian* endian);
 
-// Retrieves the width and height from the jpeg preview returning true on
+// Retrieves an image from tiff_directory. Return false when something is wrong.
+bool GetImageData(const tiff_directory::TiffDirectory& tiff_directory,
+                  StreamInterface* stream, Image* image);
+
+// Retrieves the width and height from the jpeg image returning true on
 // success. Returns false when something is wrong.
-bool GetPreviewDimensions(const std::uint32_t jpeg_offset,
-                          StreamInterface* stream, std::uint16_t* width,
-                          std::uint16_t* height);
+bool GetJpegDimensions(const std::uint32_t jpeg_offset, StreamInterface* stream,
+                       std::uint16_t* width, std::uint16_t* height);
+
+// According to Tiff/EP a thumbnail has max 256 pixels per dimension.
+// http://standardsproposals.bsigroup.com/Home/getPDF/567
+bool IsThumbnail(const Image& image,
+                 const int max_dimension = kThumbnailMaxDimension);
 
 // Parses through a Tiff IFD and writes all 'desired_tags' to a
 // 'tiff_directory'.
-// Sets 'error' to kFail if something with the Tiff data is wrong.
-Error ParseDirectory(const std::uint32_t tiff_offset,
-                     const std::uint32_t ifd_offset,
-                     const tiff_directory::Endian endian,
-                     const TagSet& desired_tags, StreamInterface* stream,
-                     tiff_directory::TiffDirectory* tiff_directory,
-                     std::uint32_t* next_ifd_offset);
+// Returns false if something with the Tiff data is wrong.
+bool ParseDirectory(const std::uint32_t tiff_offset,
+                    const std::uint32_t ifd_offset,
+                    const tiff_directory::Endian endian,
+                    const TagSet& desired_tags, StreamInterface* stream,
+                    tiff_directory::TiffDirectory* tiff_directory,
+                    std::uint32_t* next_ifd_offset);
+
+// Returns true if Exif orientation for the image can be obtained. False
+// otherwise.
+bool GetExifOrientation(StreamInterface* stream, const std::uint32_t offset,
+                        std::uint32_t* orientation);
+
+// Reads the width and height of the full resolution image. The tag groups are
+// exclusive.
+bool GetFullDimension32(const tiff_directory::TiffDirectory& tiff_directory,
+                        std::uint32_t* width, std::uint32_t* height);
 
 // Enables us to parse through data that complies to the Tiff/EP specification.
 class TiffParser {
@@ -149,25 +171,24 @@ class TiffParser {
   TiffParser(StreamInterface* stream, const std::uint32_t offset);
 
   // Runs over the Tiff IFD, Exif IFD and subIFDs to get the preview image data.
-  // Returns kFail if something with the Tiff tags is wrong.
-  Error GetPreviewImageData(const TiffContent& tiff_content,
-                            PreviewImageData* image_metadata);
+  // Returns false if something with the Tiff tags is wrong.
+  bool GetPreviewImageData(const TiffContent& tiff_content,
+                           PreviewImageData* image_metadata);
 
-  // Returns kFail if called more that once or something with the Tiff data is
+  // Returns false if called more that once or something with the Tiff data is
   // wrong.
-  Error Parse(const TagSet& desired_tags, const std::uint16_t max_number_ifds,
-              TiffContent* tiff_content);
+  bool Parse(const TagSet& desired_tags, const std::uint16_t max_number_ifds,
+             TiffContent* tiff_content);
 
  private:
   // Disallow copy and assignment.
   TiffParser(const TiffParser&) = delete;
   TiffParser& operator=(const TiffParser&) = delete;
 
-  Error ParseIfd(const std::uint32_t ifd_offset, const TagSet& desired_tags,
-                 const std::uint16_t max_number_ifds,
-                 IfdVector* tiff_directory);
-  Error ParseGpsData(const tiff_directory::TiffDirectory* tiff_ifd,
-                     TiffContent* tiff_content);
+  bool ParseIfd(const std::uint32_t ifd_offset, const TagSet& desired_tags,
+                const std::uint16_t max_number_ifds, IfdVector* tiff_directory);
+  bool ParseGpsData(const tiff_directory::TiffDirectory* tiff_ifd,
+                    TiffContent* tiff_content);
 
   StreamInterface* stream_ = nullptr;
   std::uint32_t tiff_offset_ = 0;

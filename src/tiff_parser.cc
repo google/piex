@@ -17,6 +17,8 @@
 #include "src/tiff_parser.h"
 
 #include <cstring>
+#include <limits>
+#include <numeric>
 
 #include "src/tiff_directory/tiff_directory.h"
 
@@ -38,54 +40,17 @@ const std::uint32_t kStartOfFrame = 0xFFC0;
 const std::uint32_t kStartOfImage = 0xFFD8;
 const std::uint32_t kStartOfScan = 0xFFDA;
 
-// Reads the width and height of the full resolution image. The tag groups are
-// exclusive.
-bool GetFullDimension(const TiffDirectory& tiff_directory, std::uint32_t* width,
-                      std::uint32_t* height) {
-  if (tiff_directory.Has(kExifTagWidth) && tiff_directory.Has(kExifTagHeight)) {
-    if (!tiff_directory.Get(kExifTagWidth, width) ||
-        !tiff_directory.Get(kExifTagHeight, height)) {
-      return false;
-    }
-  } else if (tiff_directory.Has(kTiffTagImageWidth) &&
-             tiff_directory.Has(kTiffTagImageLength)) {
-    if (!tiff_directory.Get(kTiffTagImageWidth, width) ||
-        !tiff_directory.Get(kTiffTagImageLength, height)) {
-      return false;
-    }
-  } else if (tiff_directory.Has(kPanaTagTopBorder) &&
-             tiff_directory.Has(kPanaTagLeftBorder) &&
-             tiff_directory.Has(kPanaTagBottomBorder) &&
-             tiff_directory.Has(kPanaTagRightBorder)) {
-    std::uint32_t left;
-    std::uint32_t right;
-    std::uint32_t top;
-    std::uint32_t bottom;
-    if (tiff_directory.Get(kPanaTagLeftBorder, &left) &&
-        tiff_directory.Get(kPanaTagRightBorder, &right) &&
-        tiff_directory.Get(kPanaTagTopBorder, &top) &&
-        tiff_directory.Get(kPanaTagBottomBorder, &bottom) && bottom > top &&
-        right > left) {
-      *height = bottom - top;
-      *width = right - left;
-    } else {
-      return false;
-    }
-  } else if (tiff_directory.Has(kExifTagDefaultCropSize)) {
-    std::vector<std::uint32_t> crop(2);
-    std::vector<Rational> crop_rational(2);
-    if (tiff_directory.Get(kExifTagDefaultCropSize, &crop)) {
-      *width = crop[0];
-      *height = crop[1];
-    } else if (tiff_directory.Get(kExifTagDefaultCropSize, &crop_rational) &&
-               crop_rational[0].denominator != 0 &&
-               crop_rational[1].denominator != 0) {
-      *width = crop_rational[0].numerator / crop_rational[0].denominator;
-      *height = crop_rational[1].numerator / crop_rational[1].denominator;
-    } else {
-      return false;
-    }
+bool GetFullDimension16(const TiffDirectory& tiff_directory,
+                        std::uint16_t* width, std::uint16_t* height) {
+  std::uint32_t tmp_width = 0;
+  std::uint32_t tmp_height = 0;
+  if (!GetFullDimension32(tiff_directory, &tmp_width, &tmp_height) ||
+      tmp_width > std::numeric_limits<std::uint16_t>::max() ||
+      tmp_height > std::numeric_limits<std::uint16_t>::max()) {
+    return false;
   }
+  *width = static_cast<std::uint16_t>(tmp_width);
+  *height = static_cast<std::uint16_t>(tmp_height);
   return true;
 }
 
@@ -160,45 +125,34 @@ void FillGpsPreviewImageData(const TiffDirectory& gps_directory,
   }
 }
 
-Error FillPreviewImageData(const TiffDirectory& tiff_directory,
-                           PreviewImageData* preview_image_data) {
-  bool success = true;
-  // Get preview_offset and preview_length
-  if (tiff_directory.Has(kTiffTagStripOffsets) &&
-      tiff_directory.Has(kTiffTagStripByteCounts)) {
-    std::vector<std::uint32_t> strip_offsets;
-    std::vector<std::uint32_t> strip_byte_counts;
-    if (!tiff_directory.Get(kTiffTagStripOffsets, &strip_offsets) ||
-        !tiff_directory.Get(kTiffTagStripByteCounts, &strip_byte_counts)) {
-      return kFail;
+void GetImageSize(const TiffDirectory& tiff_directory, StreamInterface* stream,
+                  Image* image) {
+  switch (image->format) {
+    case Image::kUncompressedRgb: {
+      GetFullDimension16(tiff_directory, &image->width, &image->height);
+      break;
     }
-    if (strip_offsets.size() == 1 && strip_byte_counts.size() == 1) {
-      preview_image_data->preview.offset = strip_offsets[0];
-      preview_image_data->preview.length = strip_byte_counts[0];
-      // TODO: remove old vars.
-      preview_image_data->preview_offset = strip_offsets[0];
-      preview_image_data->preview_length = strip_byte_counts[0];
+    case Image::kJpegCompressed: {
+      GetJpegDimensions(image->offset, stream, &image->width, &image->height);
+      break;
     }
-  } else if (tiff_directory.Has(kTiffTagJpegOffset) &&
-             tiff_directory.Has(kTiffTagJpegByteCount)) {
-    success &= tiff_directory.Get(kTiffTagJpegOffset,
-                                  &preview_image_data->preview.offset);
-    success &= tiff_directory.Get(kTiffTagJpegByteCount,
-                                  &preview_image_data->preview.length);
-    // TODO: remove old vars.
-    preview_image_data->preview_offset = preview_image_data->preview.offset;
-    preview_image_data->preview_length = preview_image_data->preview.length;
+    default: { return; }
+  }
+}
 
-  } else if (tiff_directory.Has(kPanaTagJpegImage)) {
-    if (!tiff_directory.GetOffsetAndLength(
-            kPanaTagJpegImage, TIFF_TYPE_UNDEFINED,
-            &preview_image_data->preview.offset,
-            &preview_image_data->preview.length)) {
-      return kFail;
+bool FillPreviewImageData(const TiffDirectory& tiff_directory,
+                          StreamInterface* stream,
+                          PreviewImageData* preview_image_data) {
+  bool success = true;
+  // Get preview or thumbnail. The code assumes that only thumbnails can be
+  // uncompressed. Preview images are always JPEG compressed.
+  Image image;
+  if (GetImageData(tiff_directory, stream, &image)) {
+    if (IsThumbnail(image)) {
+      preview_image_data->thumbnail = image;
+    } else if (image.format == Image::kJpegCompressed) {
+      preview_image_data->preview = image;
     }
-    // TODO: remove old vars.
-    preview_image_data->preview_offset = preview_image_data->preview.offset;
-    preview_image_data->preview_length = preview_image_data->preview.length;
   }
 
   // Get exif_orientation if it was not set already.
@@ -219,8 +173,8 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
     }
   }
 
-  success &= GetFullDimension(tiff_directory, &preview_image_data->full_width,
-                              &preview_image_data->full_height);
+  success &= GetFullDimension32(tiff_directory, &preview_image_data->full_width,
+                                &preview_image_data->full_height);
 
   if (tiff_directory.Has(kTiffTagMake)) {
     success &= tiff_directory.Get(kTiffTagMake, &preview_image_data->maker);
@@ -265,11 +219,7 @@ Error FillPreviewImageData(const TiffDirectory& tiff_directory,
                            &preview_image_data->focal_length);
   }
 
-  if (!success) {
-    return kFail;
-  }
-
-  return kOk;
+  return success;
 }
 
 const TiffDirectory* FindFirstTagInIfds(const TiffDirectory::Tag& tag,
@@ -289,12 +239,28 @@ const TiffDirectory* FindFirstTagInIfds(const TiffDirectory::Tag& tag,
   return NULL;
 }
 
+// Return true if all data blocks are ordered one after the other without gaps.
+bool OffsetsAreConsecutive(
+    const std::vector<std::uint32_t>& strip_offsets,
+    const std::vector<std::uint32_t>& strip_byte_counts) {
+  if (strip_offsets.size() != strip_byte_counts.size() ||
+      strip_offsets.empty()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < strip_offsets.size() - 1; ++i) {
+    if (strip_offsets[i] + strip_byte_counts[i] != strip_offsets[i + 1]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Gets the SubIfd content.
-void ParseSubIfds(const std::uint32_t tiff_offset, const TagSet& desired_tags,
+bool ParseSubIfds(const std::uint32_t tiff_offset, const TagSet& desired_tags,
                   const std::uint32_t max_number_ifds, const Endian endian,
-                  StreamInterface* stream, TiffDirectory* tiff_ifd,
-                  Error* error) {
-  if (*error == kOk && tiff_ifd->Has(kTiffTagSubIfd)) {
+                  StreamInterface* stream, TiffDirectory* tiff_ifd) {
+  if (tiff_ifd->Has(kTiffTagSubIfd)) {
     std::uint32_t offset = 0;
     std::uint32_t length = 0;
     tiff_ifd->GetOffsetAndLength(kTiffTagSubIfd, TIFF_TYPE_LONG, &offset,
@@ -303,21 +269,20 @@ void ParseSubIfds(const std::uint32_t tiff_offset, const TagSet& desired_tags,
     for (std::uint32_t j = 0; j < length && j < max_number_ifds; ++j) {
       std::uint32_t sub_offset;
       if (!Get32u(stream, offset + 4 * j, endian, &sub_offset)) {
-        *error = kFail;
-        return;
+        return false;
       }
 
       std::uint32_t next_ifd_offset;
       TiffDirectory sub_ifd(static_cast<Endian>(endian));
-      *error = ParseDirectory(tiff_offset, sub_offset, endian, desired_tags,
-                              stream, &sub_ifd, &next_ifd_offset);
-      if (*error != kOk) {
-        return;
+      if (!ParseDirectory(tiff_offset, sub_offset, endian, desired_tags, stream,
+                          &sub_ifd, &next_ifd_offset)) {
+        return false;
       }
 
       tiff_ifd->AddSubDirectory(sub_ifd);
     }
   }
+  return true;
 }
 
 }  // namespace
@@ -397,9 +362,72 @@ bool GetEndianness(const std::uint32_t tiff_offset, StreamInterface* stream,
   }
 }
 
-bool GetPreviewDimensions(const std::uint32_t jpeg_offset,
-                          StreamInterface* stream, std::uint16_t* width,
-                          std::uint16_t* height) {
+bool GetImageData(const TiffDirectory& tiff_directory, StreamInterface* stream,
+                  Image* image) {
+  std::uint32_t length = 0;
+  std::uint32_t offset = 0;
+
+  if (tiff_directory.Has(kTiffTagJpegOffset) &&
+      tiff_directory.Has(kTiffTagJpegByteCount)) {
+    if (!tiff_directory.Get(kTiffTagJpegOffset, &offset) ||
+        !tiff_directory.Get(kTiffTagJpegByteCount, &length)) {
+      return false;
+    }
+    image->format = Image::kJpegCompressed;
+  } else if (tiff_directory.Has(kTiffTagStripOffsets) &&
+             tiff_directory.Has(kTiffTagStripByteCounts)) {
+    std::vector<std::uint32_t> strip_offsets;
+    std::vector<std::uint32_t> strip_byte_counts;
+    if (!tiff_directory.Get(kTiffTagStripOffsets, &strip_offsets) ||
+        !tiff_directory.Get(kTiffTagStripByteCounts, &strip_byte_counts)) {
+      return false;
+    }
+
+    std::uint32_t compression = 0;
+    if (!OffsetsAreConsecutive(strip_offsets, strip_byte_counts) ||
+        !tiff_directory.Get(kTiffTagCompression, &compression)) {
+      return false;
+    }
+
+    std::uint32_t photometric_interpretation = 0;
+    if (tiff_directory.Get(kTiffTagPhotometric, &photometric_interpretation) &&
+        photometric_interpretation != 2 /* RGB */ &&
+        photometric_interpretation != 6 /* YCbCr */) {
+      return false;
+    }
+
+    switch (compression) {
+      case 1: /*uncompressed*/
+        image->format = Image::kUncompressedRgb;
+        break;
+      case 6: /* JPEG(old) */
+      case 7: /* JPEG */
+        image->format = Image::kJpegCompressed;
+        break;
+      default:
+        return false;
+    }
+    length = static_cast<std::uint32_t>(
+        std::accumulate(strip_byte_counts.begin(), strip_byte_counts.end(), 0));
+    offset = strip_offsets[0];
+  } else if (tiff_directory.Has(kPanaTagJpegImage)) {
+    if (!tiff_directory.GetOffsetAndLength(
+            kPanaTagJpegImage, TIFF_TYPE_UNDEFINED, &offset, &length)) {
+      return false;
+    }
+    image->format = Image::kJpegCompressed;
+  } else {
+    return false;
+  }
+
+  image->length = length;
+  image->offset = offset;
+  GetImageSize(tiff_directory, stream, image);
+  return true;
+}
+
+bool GetJpegDimensions(const std::uint32_t jpeg_offset, StreamInterface* stream,
+                       std::uint16_t* width, std::uint16_t* height) {
   const Endian endian = kBigEndian;
   std::uint32_t offset = jpeg_offset;
   std::uint16_t segment;
@@ -432,14 +460,18 @@ bool GetPreviewDimensions(const std::uint32_t jpeg_offset,
   return false;
 }
 
-Error ParseDirectory(const std::uint32_t tiff_offset,
-                     const std::uint32_t ifd_offset, const Endian endian,
-                     const TagSet& desired_tags, StreamInterface* stream,
-                     TiffDirectory* tiff_directory,
-                     std::uint32_t* next_ifd_offset) {
+bool IsThumbnail(const Image& image, const int max_dimension) {
+  return image.width <= max_dimension && image.height <= max_dimension;
+}
+
+bool ParseDirectory(const std::uint32_t tiff_offset,
+                    const std::uint32_t ifd_offset, const Endian endian,
+                    const TagSet& desired_tags, StreamInterface* stream,
+                    TiffDirectory* tiff_directory,
+                    std::uint32_t* next_ifd_offset) {
   std::uint16_t number_of_entries;
   if (!Get16u(stream, ifd_offset, endian, &number_of_entries)) {
-    return kFail;
+    return false;
   }
 
   for (std::uint32_t i = 0;
@@ -455,14 +487,14 @@ Error ParseDirectory(const std::uint32_t tiff_offset,
         continue;
       }
     } else {
-      return kFail;
+      return false;
     }
 
     const size_t type_size = SizeOfType(type, nullptr /* no error */);
 
     // Check that type_size * number_of_elements does not exceed UINT32_MAX.
     if (type_size != 0 && number_of_elements > UINT32_MAX / type_size) {
-      return kFail;
+      return false;
     }
     const size_t byte_count =
         type_size * static_cast<size_t>(number_of_elements);
@@ -482,17 +514,93 @@ Error ParseDirectory(const std::uint32_t tiff_offset,
     const std::vector<std::uint8_t> data =
         GetData(value_offset, byte_count, stream, &error);
     if (error != kOk) {
-      return error;
+      return false;
     }
     tiff_directory->AddEntry(tag, type, number_of_elements, value_offset, data);
   }
 
-  if (Get32u(stream, ifd_offset + 2u + number_of_entries * 12u, endian,
-             next_ifd_offset)) {
-    return kOk;
-  } else {
-    return kFail;
+  return Get32u(stream, ifd_offset + 2u + number_of_entries * 12u, endian,
+                next_ifd_offset);
+}
+
+bool GetExifOrientation(StreamInterface* stream, const std::uint32_t offset,
+                        std::uint32_t* orientation) {
+  const TagSet kOrientationTagSet = {kTiffTagOrientation};
+  const std::uint32_t kNumberOfIfds = 1;
+
+  TiffContent tiff_content;
+  if (!TiffParser(stream, offset)
+           .Parse(kOrientationTagSet, kNumberOfIfds, &tiff_content)) {
+    return false;
   }
+
+  for (const auto& tiff_directory : tiff_content.tiff_directory) {
+    if (tiff_directory.Has(kTiffTagOrientation) &&
+        tiff_directory.Get(kTiffTagOrientation, orientation)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool GetFullDimension32(const TiffDirectory& tiff_directory,
+                        std::uint32_t* width, std::uint32_t* height) {
+  // The sub file type needs to be 0 (main image) to contain a valid full
+  // dimensions. This is important in particular for DNG.
+  if (tiff_directory.Has(kTiffTagSubFileType)) {
+    std::uint32_t sub_file_type;
+    if (!tiff_directory.Get(kTiffTagSubFileType, &sub_file_type) ||
+        sub_file_type != 0) {
+      return false;
+    }
+  }
+
+  if (tiff_directory.Has(kExifTagWidth) && tiff_directory.Has(kExifTagHeight)) {
+    if (!tiff_directory.Get(kExifTagWidth, width) ||
+        !tiff_directory.Get(kExifTagHeight, height)) {
+      return false;
+    }
+  } else if (tiff_directory.Has(kTiffTagImageWidth) &&
+             tiff_directory.Has(kTiffTagImageLength)) {
+    if (!tiff_directory.Get(kTiffTagImageWidth, width) ||
+        !tiff_directory.Get(kTiffTagImageLength, height)) {
+      return false;
+    }
+  } else if (tiff_directory.Has(kPanaTagTopBorder) &&
+             tiff_directory.Has(kPanaTagLeftBorder) &&
+             tiff_directory.Has(kPanaTagBottomBorder) &&
+             tiff_directory.Has(kPanaTagRightBorder)) {
+    std::uint32_t left;
+    std::uint32_t right;
+    std::uint32_t top;
+    std::uint32_t bottom;
+    if (tiff_directory.Get(kPanaTagLeftBorder, &left) &&
+        tiff_directory.Get(kPanaTagRightBorder, &right) &&
+        tiff_directory.Get(kPanaTagTopBorder, &top) &&
+        tiff_directory.Get(kPanaTagBottomBorder, &bottom) && bottom > top &&
+        right > left) {
+      *height = bottom - top;
+      *width = right - left;
+    } else {
+      return false;
+    }
+  } else if (tiff_directory.Has(kExifTagDefaultCropSize)) {
+    std::vector<std::uint32_t> crop(2);
+    std::vector<Rational> crop_rational(2);
+    if (tiff_directory.Get(kExifTagDefaultCropSize, &crop)) {
+      *width = crop[0];
+      *height = crop[1];
+    } else if (tiff_directory.Get(kExifTagDefaultCropSize, &crop_rational) &&
+               crop_rational[0].denominator != 0 &&
+               crop_rational[1].denominator != 0) {
+      *width = crop_rational[0].numerator / crop_rational[0].denominator;
+      *height = crop_rational[1].numerator / crop_rational[1].denominator;
+    } else {
+      return false;
+    }
+  }
+  return true;
 }
 
 TiffParser::TiffParser(StreamInterface* stream) : stream_(stream) {}
@@ -500,34 +608,35 @@ TiffParser::TiffParser(StreamInterface* stream) : stream_(stream) {}
 TiffParser::TiffParser(StreamInterface* stream, const std::uint32_t offset)
     : stream_(stream), tiff_offset_(offset) {}
 
-Error TiffParser::GetPreviewImageData(const TiffContent& tiff_content,
-                                      PreviewImageData* preview_image_data) {
-  Error error = kOk;
+bool TiffParser::GetPreviewImageData(const TiffContent& tiff_content,
+                                     PreviewImageData* preview_image_data) {
+  bool success = true;
   for (const auto& tiff_directory : tiff_content.tiff_directory) {
-    error = FillPreviewImageData(tiff_directory, preview_image_data);
-    if (error == kOk && tiff_directory.Has(kTiffTagExifIfd) &&
+    success = FillPreviewImageData(tiff_directory, stream_, preview_image_data);
+    if (success && tiff_directory.Has(kTiffTagExifIfd) &&
         tiff_content.exif_directory) {
-      error = FillPreviewImageData(*tiff_content.exif_directory,
-                                   preview_image_data);
+      success = FillPreviewImageData(*tiff_content.exif_directory, stream_,
+                                     preview_image_data);
     }
-    if (error == kOk && tiff_directory.Has(kExifTagGps) &&
+    if (success && tiff_directory.Has(kExifTagGps) &&
         tiff_content.gps_directory) {
       FillGpsPreviewImageData(*tiff_content.gps_directory, preview_image_data);
     }
     for (const auto& sub_directory : tiff_directory.GetSubDirectories()) {
-      if (error == kOk) {
-        error = FillPreviewImageData(sub_directory, preview_image_data);
+      if (success) {
+        success =
+            FillPreviewImageData(sub_directory, stream_, preview_image_data);
       }
     }
   }
-  return error;
+  return success;
 }
 
-Error TiffParser::Parse(const TagSet& desired_tags,
-                        const std::uint16_t max_number_ifds,
-                        TiffContent* tiff_content) {
+bool TiffParser::Parse(const TagSet& desired_tags,
+                       const std::uint16_t max_number_ifds,
+                       TiffContent* tiff_content) {
   if (!tiff_content->tiff_directory.empty()) {
-    return kFail;  // You shall call Parse() only once.
+    return false;  // You shall call Parse() only once.
   }
 
   const std::uint32_t kTiffIdentifierSize = 4;
@@ -535,13 +644,12 @@ Error TiffParser::Parse(const TagSet& desired_tags,
   if (!GetEndianness(tiff_offset_, stream_, &endian_) ||
       !Get32u(stream_, tiff_offset_ + kTiffIdentifierSize, endian_,
               &offset_to_ifd)) {
-    return kFail;
+    return false;
   }
 
-  Error error = ParseIfd(tiff_offset_ + offset_to_ifd, desired_tags,
-                         max_number_ifds, &tiff_content->tiff_directory);
-  if (error != kOk) {
-    return error;
+  if (!ParseIfd(tiff_offset_ + offset_to_ifd, desired_tags, max_number_ifds,
+                &tiff_content->tiff_directory)) {
+    return false;
   }
 
   // Get the Exif data.
@@ -553,11 +661,10 @@ Error TiffParser::Parse(const TagSet& desired_tags,
     if (tiff_ifd->Get(kTiffTagExifIfd, &offset)) {
       tiff_content->exif_directory.reset(new TiffDirectory(endian_));
       std::uint32_t next_ifd_offset;
-      error = ParseDirectory(
-          tiff_offset_, tiff_offset_ + offset, endian_, desired_tags, stream_,
-          tiff_content->exif_directory.get(), &next_ifd_offset);
-      if (error != kOk) {
-        return error;
+      if (!ParseDirectory(
+              tiff_offset_, tiff_offset_ + offset, endian_, desired_tags,
+              stream_, tiff_content->exif_directory.get(), &next_ifd_offset)) {
+        return false;
       }
 
       return ParseGpsData(tiff_ifd, tiff_content);
@@ -572,34 +679,32 @@ Error TiffParser::Parse(const TagSet& desired_tags,
     return ParseGpsData(tiff_ifd, tiff_content);
   }
 
-  return error;
+  return true;
 }
 
-Error TiffParser::ParseIfd(const std::uint32_t offset_to_ifd,
-                           const TagSet& desired_tags,
-                           const std::uint16_t max_number_ifds,
-                           IfdVector* tiff_directory) {
+bool TiffParser::ParseIfd(const std::uint32_t offset_to_ifd,
+                          const TagSet& desired_tags,
+                          const std::uint16_t max_number_ifds,
+                          IfdVector* tiff_directory) {
   std::uint32_t next_ifd_offset;
   TiffDirectory tiff_ifd(static_cast<Endian>(endian_));
-  Error error =
-      ParseDirectory(tiff_offset_, offset_to_ifd, endian_, desired_tags,
-                     stream_, &tiff_ifd, &next_ifd_offset);
-
-  ParseSubIfds(tiff_offset_, desired_tags, max_number_ifds, endian_, stream_,
-               &tiff_ifd, &error);
-  if (error == kOk) {
-    tiff_directory->push_back(tiff_ifd);
-    if (next_ifd_offset != 0 && tiff_directory->size() < max_number_ifds) {
-      error = ParseIfd(tiff_offset_ + next_ifd_offset, desired_tags,
-                       max_number_ifds, tiff_directory);
-    }
+  if (!ParseDirectory(tiff_offset_, offset_to_ifd, endian_, desired_tags,
+                      stream_, &tiff_ifd, &next_ifd_offset) ||
+      !ParseSubIfds(tiff_offset_, desired_tags, max_number_ifds, endian_,
+                    stream_, &tiff_ifd)) {
+    return false;
   }
 
-  return error;
+  tiff_directory->push_back(tiff_ifd);
+  if (next_ifd_offset != 0 && tiff_directory->size() < max_number_ifds) {
+    return ParseIfd(tiff_offset_ + next_ifd_offset, desired_tags,
+                    max_number_ifds, tiff_directory);
+  }
+  return true;
 }
 
-Error TiffParser::ParseGpsData(const TiffDirectory* tiff_ifd,
-                               TiffContent* tiff_content) {
+bool TiffParser::ParseGpsData(const TiffDirectory* tiff_ifd,
+                              TiffContent* tiff_content) {
   std::uint32_t offset;
   if (tiff_ifd->Get(kExifTagGps, &offset)) {
     tiff_content->gps_directory.reset(new TiffDirectory(endian_));
@@ -612,7 +717,7 @@ Error TiffParser::ParseGpsData(const TiffDirectory* tiff_ifd,
                           gps_tags, stream_, tiff_content->gps_directory.get(),
                           &next_ifd_offset);
   }
-  return kOk;
+  return true;
 }
 
 }  // namespace piex
