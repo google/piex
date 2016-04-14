@@ -28,7 +28,7 @@
 namespace piex {
 
 // Specifies the maximum number of pixels for thumbnails in each direction.
-const int kThumbnailMaxDimension = 256;
+const int kThumbnailMaxDimension = 512;
 
 // Specifies all tags that might be of interest to get the preview data.
 enum GpsTags {

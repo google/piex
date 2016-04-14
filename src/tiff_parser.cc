@@ -556,7 +556,22 @@ bool GetFullDimension32(const TiffDirectory& tiff_directory,
     }
   }
 
-  if (tiff_directory.Has(kExifTagWidth) && tiff_directory.Has(kExifTagHeight)) {
+  if (tiff_directory.Has(kExifTagDefaultCropSize)) {
+    std::vector<std::uint32_t> crop(2);
+    std::vector<Rational> crop_rational(2);
+    if (tiff_directory.Get(kExifTagDefaultCropSize, &crop)) {
+      *width = crop[0];
+      *height = crop[1];
+    } else if (tiff_directory.Get(kExifTagDefaultCropSize, &crop_rational) &&
+               crop_rational[0].denominator != 0 &&
+               crop_rational[1].denominator != 0) {
+      *width = crop_rational[0].numerator / crop_rational[0].denominator;
+      *height = crop_rational[1].numerator / crop_rational[1].denominator;
+    } else {
+      return false;
+    }
+  } else if (tiff_directory.Has(kExifTagWidth) &&
+             tiff_directory.Has(kExifTagHeight)) {
     if (!tiff_directory.Get(kExifTagWidth, width) ||
         !tiff_directory.Get(kExifTagHeight, height)) {
       return false;
@@ -582,20 +597,6 @@ bool GetFullDimension32(const TiffDirectory& tiff_directory,
         right > left) {
       *height = bottom - top;
       *width = right - left;
-    } else {
-      return false;
-    }
-  } else if (tiff_directory.Has(kExifTagDefaultCropSize)) {
-    std::vector<std::uint32_t> crop(2);
-    std::vector<Rational> crop_rational(2);
-    if (tiff_directory.Get(kExifTagDefaultCropSize, &crop)) {
-      *width = crop[0];
-      *height = crop[1];
-    } else if (tiff_directory.Get(kExifTagDefaultCropSize, &crop_rational) &&
-               crop_rational[0].denominator != 0 &&
-               crop_rational[1].denominator != 0) {
-      *width = crop_rational[0].numerator / crop_rational[0].denominator;
-      *height = crop_rational[1].numerator / crop_rational[1].denominator;
     } else {
       return false;
     }
