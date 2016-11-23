@@ -419,9 +419,16 @@ Error DngGetPreviewData(StreamInterface* stream,
       kTiffTagStripByteCounts, kTiffTagStripOffsets, kTiffTagSubIfd};
 
   TiffContent tiff_content;
-  const std::uint32_t kNumberOfIfds = 4;
+  const std::uint32_t kNumberOfIfds = 3;
   if (!GetPreviewData(extended_tags, 0, kNumberOfIfds, stream, &tiff_content,
                       preview_image_data)) {
+    return kFail;
+  }
+
+  const TiffDirectory& tiff_directory = tiff_content.tiff_directory[0];
+
+  if (!GetFullCropDimension(tiff_directory, &preview_image_data->full_width,
+                            &preview_image_data->full_height)) {
     return kFail;
   }
 
@@ -431,7 +438,7 @@ Error DngGetPreviewData(StreamInterface* stream,
 
   // Search for images in IFD0
   Image temp_image;
-  if (GetImageData(tiff_content.tiff_directory[0], stream, &temp_image)) {
+  if (GetImageData(tiff_directory, stream, &temp_image)) {
     if (IsThumbnail(temp_image, kDngThumbnailMaxDimension)) {
       thumbnail = temp_image;
     } else if (temp_image.format == Image::kJpegCompressed) {
@@ -440,7 +447,7 @@ Error DngGetPreviewData(StreamInterface* stream,
   }
 
   // Search for images in other IFDs
-  for (const auto& ifd : tiff_content.tiff_directory[0].GetSubDirectories()) {
+  for (const auto& ifd : tiff_directory.GetSubDirectories()) {
     if (GetImageData(ifd, stream, &temp_image)) {
       // Try to find the largest thumbnail/preview.
       if (IsThumbnail(temp_image, kDngThumbnailMaxDimension)) {

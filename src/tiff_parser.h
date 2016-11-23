@@ -162,6 +162,11 @@ bool GetExifOrientation(StreamInterface* stream, const std::uint32_t offset,
 bool GetFullDimension32(const tiff_directory::TiffDirectory& tiff_directory,
                         std::uint32_t* width, std::uint32_t* height);
 
+// Reads the width and height of the crop information if available.
+// Returns false if an error occured.
+bool GetFullCropDimension(const tiff_directory::TiffDirectory& tiff_directory,
+                          std::uint32_t* width, std::uint32_t* height);
+
 // Enables us to parse through data that complies to the Tiff/EP specification.
 class TiffParser {
  public:
