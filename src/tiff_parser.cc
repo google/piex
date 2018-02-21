@@ -596,23 +596,41 @@ bool GetFullDimension32(const TiffDirectory& tiff_directory,
 
 bool GetFullCropDimension(const tiff_directory::TiffDirectory& tiff_directory,
                           std::uint32_t* width, std::uint32_t* height) {
-  if (tiff_directory.Has(kExifTagDefaultCropSize)) {
-    std::vector<std::uint32_t> crop(2);
-    std::vector<Rational> crop_rational(2);
-    if (tiff_directory.Get(kExifTagDefaultCropSize, &crop)) {
+  if (!tiff_directory.Has(kExifTagDefaultCropSize)) {
+    // This doesn't look right to return true here, as we have not written
+    // anything to *width and *height. However, changing the return value here
+    // causes a whole bunch of tests to fail.
+    // TODO(timurrrr): Return false and fix the tests.
+    // In fact, this whole if() seems to be not needed,
+    // as tiff_directory(kExifTagDefaultCropSize) will return false below.
+    return true;
+  }
+
+  std::vector<std::uint32_t> crop(2);
+  if (tiff_directory.Get(kExifTagDefaultCropSize, &crop)) {
+    if (crop.size() == 2 && crop[0] > 0 && crop[1] > 0) {
       *width = crop[0];
       *height = crop[1];
-    } else if (tiff_directory.Get(kExifTagDefaultCropSize, &crop_rational) &&
-               crop_rational[0].denominator != 0 &&
-               crop_rational[1].denominator != 0) {
-      *width = crop_rational[0].numerator / crop_rational[0].denominator;
-      *height = crop_rational[1].numerator / crop_rational[1].denominator;
+      return true;
     } else {
       return false;
     }
   }
 
-  return true;
+  std::vector<Rational> crop_rational(2);
+  if (tiff_directory.Get(kExifTagDefaultCropSize, &crop_rational)) {
+    if (crop_rational.size() == 2 && crop_rational[0].numerator > 0 &&
+        crop_rational[0].denominator > 0 && crop_rational[1].numerator > 0 &&
+        crop_rational[1].denominator > 0) {
+      *width = crop_rational[0].numerator / crop_rational[0].denominator;
+      *height = crop_rational[1].numerator / crop_rational[1].denominator;
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 TiffParser::TiffParser(StreamInterface* stream) : stream_(stream) {}
