@@ -163,7 +163,7 @@ bool GetFullDimension32(const tiff_directory::TiffDirectory& tiff_directory,
                         std::uint32_t* width, std::uint32_t* height);
 
 // Reads the width and height of the crop information if available.
-// Returns false if an error occured.
+// Returns false if an error occurred.
 bool GetFullCropDimension(const tiff_directory::TiffDirectory& tiff_directory,
                           std::uint32_t* width, std::uint32_t* height);
 

@@ -165,11 +165,14 @@ bool FillPreviewImageData(const TiffDirectory& tiff_directory,
   // Get color_space
   if (tiff_directory.Has(kExifTagColorSpace)) {
     std::uint32_t color_space;
-    success &= tiff_directory.Get(kExifTagColorSpace, &color_space);
-    if (color_space == 1) {
-      preview_image_data->color_space = PreviewImageData::kSrgb;
-    } else if (color_space == 65535 || color_space == 2) {
-      preview_image_data->color_space = PreviewImageData::kAdobeRgb;
+    if (tiff_directory.Get(kExifTagColorSpace, &color_space)) {
+      if (color_space == 1) {
+        preview_image_data->color_space = PreviewImageData::kSrgb;
+      } else if (color_space == 65535 || color_space == 2) {
+        preview_image_data->color_space = PreviewImageData::kAdobeRgb;
+      }
+    } else {
+      success = false;
     }
   }
 
