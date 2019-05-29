@@ -149,7 +149,7 @@ class ArwTypeChecker : public TypeChecker {
  public:
   virtual RawImageTypes Type() const { return kArwImage; }
 
-  virtual size_t RequestedSize() const { return 5000; }
+  virtual size_t RequestedSize() const { return 10000; }
 
   // Check multiple points:
   // 1. valid endianness at the beginning of the file;
