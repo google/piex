@@ -37,6 +37,7 @@ struct Image {
   enum Format {
     kJpegCompressed,
     kUncompressedRgb,
+    kHevcCompressed,
   };
 
   std::uint16_t width = 0;

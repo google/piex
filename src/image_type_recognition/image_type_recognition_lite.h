@@ -40,6 +40,7 @@ enum RawImageTypes {
   // raw image types
   kArwImage,
   kCr2Image,
+  kCr3Image,
   kCrwImage,
   kDcrImage,
   kDngImage,

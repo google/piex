@@ -49,6 +49,7 @@
 #include <string>
 #include <vector>
 
+#include "src/image_type_recognition/image_type_recognition_lite.h"
 #include "src/piex_types.h"
 
 namespace piex {
@@ -70,8 +71,11 @@ bool IsRaw(StreamInterface* data);
 //
 // One could check the "preview_image_data->preview_length != 0" for the
 // existance of a preview image.
-Error GetPreviewImageData(StreamInterface* data,
-                          PreviewImageData* preview_image_data);
+//
+// Updates output_type based on data, if output_type is non-null.
+Error GetPreviewImageData(
+    StreamInterface* data, PreviewImageData* preview_image_data,
+    image_type_recognition::RawImageTypes* output_type = nullptr);
 
 // Returns true if the full width and height and the mosaic pattern dimension of
 // a DNG image could be obtained. False otherwise.

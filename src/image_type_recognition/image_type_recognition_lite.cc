@@ -201,6 +201,25 @@ class ArwTypeChecker : public TypeChecker {
   }
 };
 
+// Canon RAW (CR3 extension).
+class Cr3TypeChecker : public TypeChecker {
+ public:
+  static constexpr size_t kSignatureOffset = 4;
+  static constexpr const char* kSignature = "ftypcrx ";
+
+  virtual RawImageTypes Type() const { return kCr3Image; }
+
+  virtual size_t RequestedSize() const {
+    return kSignatureOffset + strlen(kSignature);
+  }
+
+  // Checks for the ftyp box w/ brand 'crx '.
+  virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
+    RangeCheckedBytePtr limited_source = LimitSource(source);
+    return IsSignatureMatched(limited_source, kSignatureOffset, kSignature);
+  }
+};
+
 // Canon RAW (CR2 extension).
 class Cr2TypeChecker : public TypeChecker {
  public:
@@ -749,6 +768,7 @@ class TypeCheckerList {
   TypeCheckerList() {
     // Add all supported RAW type checkers here.
     checkers_.push_back(new ArwTypeChecker());
+    checkers_.push_back(new Cr3TypeChecker());
     checkers_.push_back(new Cr2TypeChecker());
     checkers_.push_back(new CrwTypeChecker());
     checkers_.push_back(new DcrTypeChecker());
@@ -841,6 +861,7 @@ bool IsRaw(const RawImageTypes type) {
 
     // Raw image types
     case kArwImage:
+    case kCr3Image:
     case kCr2Image:
     case kCrwImage:
     case kDcrImage:

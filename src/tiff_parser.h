@@ -167,6 +167,12 @@ bool GetFullDimension32(const tiff_directory::TiffDirectory& tiff_directory,
 bool GetFullCropDimension(const tiff_directory::TiffDirectory& tiff_directory,
                           std::uint32_t* width, std::uint32_t* height);
 
+// Reads 1 or more rational values for a tag and stores results into data.
+// Returns false if an error occurred.
+bool GetRational(const tiff_directory::TiffDirectory::Tag& tag,
+                 const tiff_directory::TiffDirectory& directory,
+                 const int data_size, PreviewImageData::Rational* data);
+
 // Enables us to parse through data that complies to the Tiff/EP specification.
 class TiffParser {
  public:

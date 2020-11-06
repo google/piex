@@ -54,20 +54,6 @@ bool GetFullDimension16(const TiffDirectory& tiff_directory,
   return true;
 }
 
-bool GetRational(const TiffDirectory::Tag& tag, const TiffDirectory& directory,
-                 const int data_size, PreviewImageData::Rational* data) {
-  std::vector<Rational> value;
-  if (directory.Get(tag, &value) &&
-      value.size() == static_cast<size_t>(data_size)) {
-    for (size_t i = 0; i < value.size(); ++i) {
-      data[i].numerator = value[i].numerator;
-      data[i].denominator = value[i].denominator;
-    }
-    return true;
-  }
-  return false;
-}
-
 void FillGpsPreviewImageData(const TiffDirectory& gps_directory,
                              PreviewImageData* preview_image_data) {
   if (gps_directory.Has(kGpsTagLatitudeRef) &&
@@ -460,6 +446,20 @@ bool GetJpegDimensions(const std::uint32_t jpeg_offset, StreamInterface* stream,
   } while (segment != kStartOfScan);
 
   // No width and hight information found.
+  return false;
+}
+
+bool GetRational(const TiffDirectory::Tag& tag, const TiffDirectory& directory,
+                 const int data_size, PreviewImageData::Rational* data) {
+  std::vector<Rational> value;
+  if (directory.Get(tag, &value) &&
+      value.size() == static_cast<size_t>(data_size)) {
+    for (size_t i = 0; i < value.size(); ++i) {
+      data[i].numerator = value[i].numerator;
+      data[i].denominator = value[i].denominator;
+    }
+    return true;
+  }
   return false;
 }
 
