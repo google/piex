@@ -41,7 +41,7 @@ constexpr Uuid kUuidPrvw = {0xea, 0xf4, 0x2b, 0x5e, 0x1c, 0x98, 0x4b, 0x88,
                             0xb9, 0xfb, 0xb7, 0xdc, 0x40, 0x6e, 0x4d, 0x16};
 
 constexpr size_t kTagSize = 4;
-using BoxTag = std::array<std::uint8_t, kTagSize>;
+using BoxTag = std::array<char, kTagSize>;
 
 constexpr BoxTag NewTag(const char s[kTagSize + 1]) {
   return BoxTag{s[0], s[1], s[2], s[3]};
@@ -232,8 +232,8 @@ Box GetNextBox(StreamInterface* stream, size_t offset) {
     return Box();
   }
   BoxTag tag;
-  Error status =
-      stream->GetData(offset + sizeof(length_32), kTagSize, tag.data());
+  Error status = stream->GetData(offset + sizeof(length_32), kTagSize,
+                                 reinterpret_cast<std::uint8_t*>(tag.data()));
   if (status != kOk) {
     return Box();
   }
@@ -531,7 +531,7 @@ bool IsImage(StreamInterface* stream, const Image& image) {
 
 Error Cr3GetPreviewData(StreamInterface* stream,
                         PreviewImageData* preview_image_data) {
-  ProcessData data{preview_image_data};
+  ProcessData data{.preview_image_data = preview_image_data};
   if (!ProcessStream(stream, kMdatTag, &data)) {
     return kFail;
   }
@@ -548,7 +548,7 @@ Error Cr3GetPreviewData(StreamInterface* stream,
 
 bool Cr3GetOrientation(StreamInterface* stream, std::uint32_t* orientation) {
   PreviewImageData preview_image_data;
-  ProcessData data{&preview_image_data};
+  ProcessData data{.preview_image_data = &preview_image_data};
   if (ProcessStream(stream, kCmt1Tag, &data)) {
     *orientation = preview_image_data.exif_orientation;
     return true;

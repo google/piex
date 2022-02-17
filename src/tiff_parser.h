@@ -184,7 +184,7 @@ class TiffParser {
   // Runs over the Tiff IFD, Exif IFD and subIFDs to get the preview image data.
   // Returns false if something with the Tiff tags is wrong.
   bool GetPreviewImageData(const TiffContent& tiff_content,
-                           PreviewImageData* image_metadata);
+                           PreviewImageData* preview_image_data);
 
   // Returns false if called more that once or something with the Tiff data is
   // wrong.

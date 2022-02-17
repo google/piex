@@ -283,9 +283,9 @@ bool GetOlympusPreviewImage(StreamInterface* stream,
   }
 
   if (raw_processing_ifd.Has(kOlymTagAspectFrame)) {
-    std::vector<std::uint32_t> aspect_frame(4);
+    std::vector<std::uint32_t> aspect_frame;
     if (raw_processing_ifd.Get(kOlymTagAspectFrame, &aspect_frame) &&
-        aspect_frame[2] > aspect_frame[0] &&
+        aspect_frame.size() == 4 && aspect_frame[2] > aspect_frame[0] &&
         aspect_frame[3] > aspect_frame[1]) {
       preview_image_data->full_width = aspect_frame[2] - aspect_frame[0] + 1;
       preview_image_data->full_height = aspect_frame[3] - aspect_frame[1] + 1;
