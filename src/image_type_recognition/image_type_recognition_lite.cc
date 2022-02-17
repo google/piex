@@ -183,13 +183,14 @@ class ArwTypeChecker : public TypeChecker {
     // Search for (kSignatureFileTypeSection + kSignatureVersions[i]) in first
     // requested bytes
     const string kSignatureSection("\x00\xb0\x01\x00\x04\x00\x00\x00", 8);
-    const int kSignatureVersionsSize = 5;
+    const int kSignatureVersionsSize = 6;
     const string kSignatureVersions[kSignatureVersionsSize] = {
         string("\x02\x00", 2),  // ARW 1.0
         string("\x03\x00", 2),  // ARW 2.0
         string("\x03\x01", 2),  // ARW 2.1
         string("\x03\x02", 2),  // ARW 2.2
         string("\x03\x03", 2),  // ARW 2.3
+        string("\x04\x00", 2),  // ARW 4.0
     };
     bool matched = false;
     for (int i = 0; i < kSignatureVersionsSize; ++i) {
