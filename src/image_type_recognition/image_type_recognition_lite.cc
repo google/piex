@@ -206,12 +206,12 @@ class ArwTypeChecker : public TypeChecker {
 class Cr3TypeChecker : public TypeChecker {
  public:
   static constexpr size_t kSignatureOffset = 4;
-  static constexpr const char* kSignature = "ftypcrx ";
+  static constexpr const char kSignature[] = "ftypcrx ";
 
   virtual RawImageTypes Type() const { return kCr3Image; }
 
   virtual size_t RequestedSize() const {
-    return kSignatureOffset + strlen(kSignature);
+    return kSignatureOffset + std::size(kSignature) - 1;
   }
 
   // Checks for the ftyp box w/ brand 'crx '.
