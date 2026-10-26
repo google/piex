@@ -554,7 +554,7 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
         desired_tags: &[u32],
         max_number_ifds: u16,
     ) -> Result<(), TiffError> {
-        if tiff_ifd.has(EXIF_TAG_SUB_IFDS) {
+        if tiff_ifd.get_offset_and_length(EXIF_TAG_SUB_IFDS, TiffType::Long).is_ok() {
             if let Ok(offsets) = tiff_ifd.get_u32_vec(EXIF_TAG_SUB_IFDS) {
                 for &sub_offset in offsets.iter().take(max_number_ifds as usize) {
                     let mut next_offset = 0u32;
