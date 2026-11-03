@@ -366,6 +366,29 @@ fn parse_exif_exif_ifd<R: StreamInterface + ?Sized>(
     Ok(())
 }
 
+/// Payload prefix byte count in a Canon `uuid` MOOV container box (16-byte UUID).
+const UUID_MOOV_PREFIX_LEN: u64 = UUID_MOOV.len() as u64;
+
+/// Payload prefix byte count in a Canon `uuid` PRVW container box
+/// (16-byte UUID plus 8 bytes before the nested `PRVW` child box).
+const UUID_PRVW_PREFIX_LEN: u64 = UUID_PRVW.len() as u64 + 8;
+
+/// Returns the first child-box offset inside `box_header` after a `prefix_len`-byte
+/// UUID container prefix, rejecting headers that do not enclose the full prefix.
+fn uuid_child_offset(box_header: &BoxHeader, prefix_len: u64) -> Result<u64, PiexError> {
+    let payload_len = box_header
+        .next_box_offset
+        .checked_sub(box_header.header_offset)
+        .ok_or(PiexError::InvalidBoxHeader { offset: box_header.offset })?;
+    if payload_len < prefix_len {
+        return Err(PiexError::InvalidBoxHeader { offset: box_header.offset });
+    }
+    box_header
+        .header_offset
+        .checked_add(prefix_len)
+        .ok_or(PiexError::InvalidBoxHeader { offset: box_header.offset })
+}
+
 /// Reads and dispatches processing for an individual ISOBMFF box at `box_header`.
 fn process_box<R: StreamInterface + ?Sized>(
     stream: &R,
@@ -383,19 +406,11 @@ fn process_box<R: StreamInterface + ?Sized>(
             })?;
         stream.get_data(header_offset_usize, &mut uuid)?;
 
-        if uuid == UUID_MOOV {
-            let next_off = box_header.header_offset.checked_add(16).ok_or_else(|| {
-                PiexError::CorruptData("UUID MOOV box offset overflow".to_string())
-            })?;
-            return Ok(next_off);
-        } else if uuid == UUID_PRVW {
-            let next_off = box_header.header_offset.checked_add(24).ok_or_else(|| {
-                PiexError::CorruptData("UUID PRVW box offset overflow".to_string())
-            })?;
-            return Ok(next_off);
-        } else {
-            return Ok(box_header.next_box_offset);
-        }
+        return match uuid {
+            UUID_MOOV => uuid_child_offset(box_header, UUID_MOOV_PREFIX_LEN),
+            UUID_PRVW => uuid_child_offset(box_header, UUID_PRVW_PREFIX_LEN),
+            _ => Ok(box_header.next_box_offset),
+        };
     }
 
     if should_process_children(box_header.box_type) {
