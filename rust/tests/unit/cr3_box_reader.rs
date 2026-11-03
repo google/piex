@@ -5,7 +5,7 @@ use std::io::Cursor;
 use piex::cr3::{
     find_next_box_with_tag, read_next_box, BoxHeader, BoxType, Uuid, UUID_MOOV, UUID_PRVW,
 };
-use piex::stream::{ByteSliceStream, StreamAdapter};
+use piex::stream::{ByteSliceStream, StreamAdapter, StreamInterface};
 use piex::types::PiexError;
 
 // ============================================================================
@@ -497,8 +497,8 @@ fn test_find_next_box_with_tag_detects_non_advancing_progress() {
     buf.extend_from_slice(b"moov");
 
     // Corrupted child box with non-advancing box specification
-    // Offset 8: child box has size 0, but total stream is 40 -> total_length becomes 32, but offset doesn't advance if size is invalid
-    // Let's create invalid short length 4
+    // Offset 8: child box has size 0, but total stream is 40 -> total_length becomes 32, but offset
+    // doesn't advance if size is invalid Let's create invalid short length 4
     buf.extend_from_slice(&4u32.to_be_bytes());
     buf.extend_from_slice(b"bad_");
     buf.resize(40, 0u8);
@@ -604,4 +604,372 @@ fn test_box_reader_with_stream_adapter() {
     assert_eq!(header.offset, 0);
     assert_eq!(header.header_offset, 8);
     assert_eq!(header.next_box_offset, 24);
+}
+
+// ============================================================================
+// 11. 64-bit Extended Box Bit-Lanes, Overflow Lattice & Multi-GiB CR3 Streams
+// ============================================================================
+
+struct SparseVirtualStream {
+    segments: Vec<(usize, Vec<u8>)>,
+    logical_len: usize,
+}
+
+impl StreamInterface for SparseVirtualStream {
+    fn get_data(&self, offset: usize, data: &mut [u8]) -> Result<(), PiexError> {
+        if data.is_empty() {
+            return if offset <= self.logical_len {
+                Ok(())
+            } else {
+                Err(PiexError::OutOfBounds {
+                    requested_offset: offset,
+                    requested_size: 0,
+                    total_len: self.logical_len,
+                })
+            };
+        }
+        let end = offset.checked_add(data.len()).ok_or(PiexError::OutOfBounds {
+            requested_offset: offset,
+            requested_size: data.len(),
+            total_len: self.logical_len,
+        })?;
+        if end > self.logical_len {
+            return Err(PiexError::OutOfBounds {
+                requested_offset: offset,
+                requested_size: data.len(),
+                total_len: self.logical_len,
+            });
+        }
+        data.fill(0);
+        for (seg_off, seg_bytes) in &self.segments {
+            let seg_end = seg_off.saturating_add(seg_bytes.len());
+            let copy_start = offset.max(*seg_off);
+            let copy_end = end.min(seg_end);
+            if copy_start < copy_end {
+                data[copy_start - offset..copy_end - offset]
+                    .copy_from_slice(&seg_bytes[copy_start - seg_off..copy_end - seg_off]);
+            }
+        }
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.logical_len
+    }
+}
+
+unsafe extern "C" fn sparse_ffi_read(
+    user_data: *mut core::ffi::c_void,
+    offset: usize,
+    length: usize,
+    out_data: *mut u8,
+) -> i32 {
+    if user_data.is_null() || (length > 0 && out_data.is_null()) {
+        return -1;
+    }
+    // SAFETY: `user_data` points to a live `SparseVirtualStream` for the duration of each FFI call,
+    // and when `length > 0`, `out_data` points to a writable buffer of `length` bytes allocated by
+    // `CStreamAdapter` (when `length == 0`, we pass `&mut []` without dereferencing `out_data`).
+    let (stream, dst): (&SparseVirtualStream, &mut [u8]) = unsafe {
+        (
+            &*(user_data as *const SparseVirtualStream),
+            if length == 0 { &mut [] } else { core::slice::from_raw_parts_mut(out_data, length) },
+        )
+    };
+    if stream.get_data(offset, dst).is_ok() {
+        0
+    } else {
+        -1
+    }
+}
+
+fn encode_extended_header(tag: &[u8; 4], len64: u64) -> [u8; 16] {
+    let mut hdr = [0u8; 16];
+    hdr[0..4].copy_from_slice(&1u32.to_be_bytes());
+    hdr[4..8].copy_from_slice(tag);
+    hdr[8..16].copy_from_slice(&len64.to_be_bytes());
+    hdr
+}
+
+fn encode_compact_box(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let total = u32::try_from(8 + payload.len()).unwrap();
+    let mut out = Vec::with_capacity(8 + payload.len());
+    out.extend_from_slice(&total.to_be_bytes());
+    out.extend_from_slice(tag);
+    out.extend_from_slice(payload);
+    out
+}
+
+#[test]
+fn test_read_next_box_extended_64bit_all_bit_and_byte_lanes() {
+    let base_offset = 24usize;
+    let mut sizes = Vec::new();
+    for bit in 0..4 {
+        sizes.push(16u64 | (1u64 << bit));
+    }
+    for bit in 4..64 {
+        let candidate = 1u64 << bit;
+        if candidate <= u64::MAX - (base_offset as u64) {
+            sizes.push(candidate);
+        }
+    }
+    for lo in 0u64..=15u64 {
+        sizes.push((1u64 << 32) | lo);
+    }
+    sizes.extend_from_slice(&[
+        0x0000_0000_8000_0010,
+        0x8000_0000_0000_0000,
+        0x8000_0000_8000_0010,
+        0x0102_0304_0506_0708,
+        0x8040_2010_8040_2010,
+        0xFEDC_BA98_7654_3210,
+        u64::from(u32::MAX),
+        u64::from(u32::MAX) + 1,
+    ]);
+
+    for len64 in sizes {
+        let hdr = encode_extended_header(b"mdat", len64);
+        let stream = SparseVirtualStream {
+            segments: vec![(base_offset, hdr.to_vec())],
+            logical_len: base_offset + 64,
+        };
+        let parsed = read_next_box(&stream, base_offset as u64)
+            .unwrap_or_else(|e| panic!("failed on len64={len64:#x}: {e:?}"))
+            .expect("expected Some(BoxHeader)");
+        assert_eq!(parsed.box_type, BoxType::MDAT);
+        assert_eq!(parsed.offset, base_offset as u64);
+        assert_eq!(parsed.header_offset, (base_offset as u64) + 16);
+        assert_eq!(parsed.total_length(), len64, "len64={len64:#x}");
+        assert_eq!(parsed.next_box_offset, (base_offset as u64) + len64);
+        assert_eq!(parsed.payload_length(), len64 - 16);
+    }
+
+    // Skipped child box inside an enclosing container whose low 32 bits (16) fit inside
+    // the container while its upper 32 bits overrun `enclosing.next_box_offset`.
+    for hi_bit in [32u32, 47, 62, 63] {
+        let overrun_len = (1u64 << hi_bit) | 16u64;
+        let mut child_bytes = Vec::new();
+        child_bytes.extend_from_slice(&encode_extended_header(b"free", overrun_len));
+        child_bytes.extend_from_slice(&encode_compact_box(b"trak", &[0u8; 8]));
+        let moov = encode_compact_box(b"moov", &child_bytes);
+
+        let stream = ByteSliceStream::new(&moov);
+        let enclosing = read_next_box(&stream, 0).unwrap().unwrap();
+        let found =
+            find_next_box_with_tag(&stream, enclosing.header_offset, &enclosing, BoxType::TRAK)
+                .unwrap();
+        assert!(found.is_none(), "expected overrun child at bit {hi_bit} to stop scan");
+    }
+}
+
+#[test]
+fn test_read_next_box_extended_64bit_overflow_and_max_offset_lattice() {
+    let mut offsets = vec![0usize, 24, 512];
+    if let Ok(near_4g) = usize::try_from(0xFFFF_FFE0u64) {
+        offsets.push(near_4g);
+    }
+    if usize::MAX >= 16 {
+        offsets.push(usize::MAX - 16);
+    }
+
+    for offset in offsets {
+        let offset_u64 = offset as u64;
+        let exact_max = u64::MAX - offset_u64;
+
+        for short_len in [0u64, 1, 8, 15] {
+            let hdr = encode_extended_header(b"uuid", short_len);
+            let stream = SparseVirtualStream {
+                segments: vec![(offset, hdr.to_vec())],
+                logical_len: usize::MAX,
+            };
+            assert!(
+                matches!(
+                    read_next_box(&stream, offset_u64),
+                    Err(PiexError::InvalidBoxHeader { offset: o }) if o == offset_u64
+                ),
+                "offset={offset:#x} short_len={short_len}"
+            );
+        }
+
+        let mut valid_max_lattice = vec![16u64];
+        if exact_max > 16 {
+            valid_max_lattice.push(exact_max - 1);
+        }
+        if exact_max >= 16 {
+            valid_max_lattice.push(exact_max);
+        }
+        for len64 in valid_max_lattice {
+            let hdr = encode_extended_header(b"mdat", len64);
+            let stream = SparseVirtualStream {
+                segments: vec![(offset, hdr.to_vec())],
+                logical_len: usize::MAX,
+            };
+            let parsed = read_next_box(&stream, offset_u64).unwrap().unwrap();
+            assert_eq!(parsed.total_length(), len64);
+            assert_eq!(parsed.next_box_offset, offset_u64 + len64);
+        }
+
+        if offset_u64 > 0 {
+            let mut overflow_lattice = vec![u64::MAX];
+            if let Some(plus_one) = exact_max.checked_add(1) {
+                overflow_lattice.push(plus_one);
+            }
+            if u64::MAX - 1 > exact_max {
+                overflow_lattice.push(u64::MAX - 1);
+            }
+            for len64 in overflow_lattice {
+                let hdr = encode_extended_header(b"mdat", len64);
+                let stream = SparseVirtualStream {
+                    segments: vec![(offset, hdr.to_vec())],
+                    logical_len: usize::MAX,
+                };
+                assert!(
+                    matches!(
+                        read_next_box(&stream, offset_u64),
+                        Err(PiexError::InvalidBoxHeader { offset: o }) if o == offset_u64
+                    ),
+                    "offset={offset:#x} overflow len64={len64:#x}"
+                );
+            }
+        }
+    }
+
+    let empty_at_max = SparseVirtualStream { segments: Vec::new(), logical_len: usize::MAX };
+    assert_eq!(read_next_box(&empty_at_max, usize::MAX as u64).unwrap(), None);
+    for tail_rem in 1usize..16usize {
+        let off = usize::MAX - tail_rem;
+        let hdr = encode_extended_header(b"mdat", 16);
+        let stream = SparseVirtualStream {
+            segments: vec![(off, hdr[..tail_rem].to_vec())],
+            logical_len: usize::MAX,
+        };
+        assert!(matches!(
+            read_next_box(&stream, off as u64),
+            Err(PiexError::InvalidBoxHeader { offset: o }) if o == off as u64
+        ));
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn test_sparse_cr3_multi_gib_preview_and_ffi_extended_boxes() {
+    use piex::c_types::{
+        piex_error_t, piex_preview_image_data_t, piex_raw_image_type_t, piex_stream_t,
+    };
+    use piex::cr3::{extract_cr3_orientation, extract_cr3_preview_data};
+    use piex::ffi::{
+        piex_cr3_get_orientation, piex_cr3_get_preview_data, piex_get_preview_image_data,
+    };
+
+    let mut cmt1_tiff = Vec::new();
+    cmt1_tiff.extend_from_slice(b"II\x2a\x00");
+    cmt1_tiff.extend_from_slice(&8u32.to_le_bytes());
+    cmt1_tiff.extend_from_slice(&1u16.to_le_bytes());
+    cmt1_tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+    cmt1_tiff.extend_from_slice(&3u16.to_le_bytes());
+    cmt1_tiff.extend_from_slice(&1u32.to_le_bytes());
+    cmt1_tiff.extend_from_slice(&6u16.to_le_bytes());
+    cmt1_tiff.extend_from_slice(&0u16.to_le_bytes());
+    cmt1_tiff.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut uuid_moov_payload = UUID_MOOV.to_vec();
+    uuid_moov_payload.extend_from_slice(&encode_compact_box(b"CMT1", &cmt1_tiff));
+    let moov_children = encode_compact_box(b"uuid", &uuid_moov_payload);
+    let mut moov = encode_extended_header(b"moov", (16 + moov_children.len()) as u64).to_vec();
+    moov.extend_from_slice(&moov_children);
+
+    let jpeg = b"\xFF\xD8\xFF\xE0\x00\x04PX\xFF\xD9";
+    let mut prvw_payload = vec![0u8; 6];
+    prvw_payload.extend_from_slice(&1620u16.to_be_bytes());
+    prvw_payload.extend_from_slice(&1080u16.to_be_bytes());
+    prvw_payload.extend_from_slice(&[0u8; 2]);
+    prvw_payload.extend_from_slice(&(jpeg.len() as u32).to_be_bytes());
+    prvw_payload.extend_from_slice(jpeg);
+    let mut uuid_prvw_payload = UUID_PRVW.to_vec();
+    uuid_prvw_payload.extend_from_slice(&[0u8; 8]);
+    uuid_prvw_payload.extend_from_slice(&encode_compact_box(b"PRVW", &prvw_payload));
+    let uuid_prvw = encode_compact_box(b"uuid", &uuid_prvw_payload);
+
+    let mut prefix = encode_compact_box(b"ftyp", b"crx \x00\x00\x00\x01crx isom");
+    prefix.extend_from_slice(&moov);
+    prefix.extend_from_slice(&uuid_prvw);
+
+    let free_offset = prefix.len();
+    let skip_past_4gib: u64 = (1u64 << 32) | 64u64;
+    let mut seg0 = prefix.clone();
+    seg0.extend_from_slice(&encode_extended_header(b"free", skip_past_4gib));
+    let real_mdat = encode_compact_box(b"mdat", &[0xAA; 16]);
+    let target_mdat_off = free_offset + (skip_past_4gib as usize);
+
+    // 1. Positive >4 GiB sparse seek lands cleanly on `mdat` across Rust and C-FFI.
+    let mut valid_stream = SparseVirtualStream {
+        segments: vec![(0, seg0.clone()), (target_mdat_off, real_mdat.clone())],
+        logical_len: target_mdat_off + real_mdat.len(),
+    };
+    assert_eq!(extract_cr3_orientation(&valid_stream).unwrap(), 6);
+    let preview = extract_cr3_preview_data(&valid_stream).unwrap();
+    assert_eq!(preview.exif_orientation, 6);
+    assert_eq!(preview.preview.width, 1620);
+    assert_eq!(preview.preview.height, 1080);
+
+    let c_stream = piex_stream_t {
+        read_fn: Some(sparse_ffi_read),
+        user_data: (&mut valid_stream as *mut SparseVirtualStream).cast(),
+    };
+    let mut ffi_orient = 0u32;
+    let mut ffi_data = piex_preview_image_data_t::default();
+    let mut ffi_type = piex_raw_image_type_t::PIEX_RAW_TYPE_NON_RAW;
+    // SAFETY: `c_stream` wraps live `valid_stream`, and all output references are valid locals.
+    unsafe {
+        assert!(piex_cr3_get_orientation(Some(&c_stream), Some(&mut ffi_orient)));
+        assert_eq!(ffi_orient, 6);
+        assert_eq!(
+            piex_cr3_get_preview_data(Some(&c_stream), Some(&mut ffi_data)),
+            piex_error_t::PIEX_OK
+        );
+        assert_eq!(ffi_data.preview.width, 1620);
+        assert_eq!(
+            piex_get_preview_image_data(Some(&c_stream), Some(&mut ffi_data), Some(&mut ffi_type)),
+            piex_error_t::PIEX_OK
+        );
+        assert_eq!(ffi_type, piex_raw_image_type_t::PIEX_RAW_TYPE_CR3);
+    }
+
+    // 2. Decoy `mdat` placed at low-32-bit offset `free_offset + 64` is never visited when the
+    //    stream ends before `free_offset + ((1 << 32) | 64)`.
+    let decoy_off = free_offset + 64;
+    let mut decoy_stream = SparseVirtualStream {
+        segments: vec![(0, seg0), (decoy_off, real_mdat)],
+        logical_len: 16_384,
+    };
+    assert!(extract_cr3_preview_data(&decoy_stream).is_err());
+    let decoy_c_stream = piex_stream_t {
+        read_fn: Some(sparse_ffi_read),
+        user_data: (&mut decoy_stream as *mut SparseVirtualStream).cast(),
+    };
+    // SAFETY: `decoy_c_stream` wraps live `decoy_stream` and `ffi_data` is a valid local.
+    unsafe {
+        assert_eq!(
+            piex_cr3_get_preview_data(Some(&decoy_c_stream), Some(&mut ffi_data)),
+            piex_error_t::PIEX_FAIL
+        );
+    }
+
+    // 3. Overflowing `mdat` extended length (`u64::MAX`) at non-zero offset is rejected.
+    let mut overflow_seg = prefix;
+    overflow_seg.extend_from_slice(&encode_extended_header(b"mdat", u64::MAX));
+    let mut overflow_stream =
+        SparseVirtualStream { segments: vec![(0, overflow_seg)], logical_len: 16_384 };
+    assert!(extract_cr3_preview_data(&overflow_stream).is_err());
+    let overflow_c_stream = piex_stream_t {
+        read_fn: Some(sparse_ffi_read),
+        user_data: (&mut overflow_stream as *mut SparseVirtualStream).cast(),
+    };
+    // SAFETY: `overflow_c_stream` wraps live `overflow_stream` and `ffi_data` is a valid local.
+    unsafe {
+        assert_eq!(
+            piex_cr3_get_preview_data(Some(&overflow_c_stream), Some(&mut ffi_data)),
+            piex_error_t::PIEX_FAIL
+        );
+    }
 }
