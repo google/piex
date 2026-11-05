@@ -339,7 +339,7 @@ impl TiffDirectory {
         let entry = self.find_entry(tag).ok_or(TiffError::TagNotFound { tag })?;
         let elem_size = match entry.type_ {
             TiffType::Short => 2,
-            TiffType::Long | TiffType::Ifd => 4,
+            TiffType::Long => 4,
             _ => {
                 return Err(TiffError::TypeMismatch {
                     tag,
@@ -365,7 +365,7 @@ impl TiffDirectory {
                     Endian::Big => u16::from_be_bytes([b[0], b[1]]) as u32,
                 })
                 .collect()),
-            TiffType::Long | TiffType::Ifd => Ok(val_bytes[..required_bytes]
+            TiffType::Long => Ok(val_bytes[..required_bytes]
                 .chunks_exact(4)
                 .map(|b| match self.endian {
                     Endian::Little => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
