@@ -159,10 +159,15 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
                     ),
                 );
             } else {
-                let mut data = vec![0u8; byte_count];
-                self.stream
-                    .get_data(value_offset as usize, &mut data)
-                    .map_err(TiffError::StreamError)?;
+                const CHUNK_SIZE: usize = 1 << 20;
+                let mut data = Vec::new();
+                while data.len() < byte_count {
+                    let start = data.len();
+                    data.resize(start + (byte_count - start).min(CHUNK_SIZE), 0);
+                    self.stream
+                        .get_data(value_offset as usize + start, &mut data[start..])
+                        .map_err(TiffError::StreamError)?;
+                }
                 directory.add_directory_entry(
                     tag_u32,
                     DirectoryEntry::new(type_, number_of_elements, value_offset, data),
