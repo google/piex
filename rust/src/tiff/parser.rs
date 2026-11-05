@@ -261,8 +261,7 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
             }
 
             let compression = dir.get_u32(TIFF_TAG_COMPRESSION)?;
-            if dir.has(TIFF_TAG_PHOTOMETRIC) {
-                let photometric = dir.get_u32(TIFF_TAG_PHOTOMETRIC)?;
+            if let Ok(photometric) = dir.get_u32(TIFF_TAG_PHOTOMETRIC) {
                 if photometric != 2 && photometric != 6 {
                     return Err(TiffError::TagNotFound { tag: TIFF_TAG_PHOTOMETRIC });
                 }
