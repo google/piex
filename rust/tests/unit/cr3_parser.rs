@@ -1358,3 +1358,38 @@ fn test_regression_crash_03_cr3_truncated_trailer_box() {
     // Verified graceful failure / error handling without panicking on truncated trailing boxes
     assert!(res.is_err());
 }
+
+#[test]
+fn test_uuid_container_payload_length_boundaries() {
+    let cmt1 = create_cmt1_payload();
+    let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    let prvw = create_prvw_payload(1280, 720, &jpeg);
+
+    for (is_prvw, payload_len, expect_ok) in [
+        (false, 15u32, false),
+        (false, 16u32, true),
+        (false, 17u32, true),
+        (true, 23u32, false),
+        (true, 24u32, true),
+        (true, 25u32, true),
+    ] {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(8u32 + payload_len).to_be_bytes());
+        buf.extend_from_slice(b"uuid");
+        if is_prvw {
+            buf.extend_from_slice(&UUID_PRVW);
+            buf.extend_from_slice(&[0u8; 8]);
+        } else {
+            buf.extend_from_slice(&UUID_MOOV);
+        }
+        let mut children = BoxBuilder::new();
+        children.add_box(b"CMT1", &cmt1);
+        children.add_box(b"PRVW", &prvw);
+        children.add_box(b"mdat", &[]);
+        buf.extend_from_slice(&children.buf);
+
+        let stream = ByteSliceStream::new(&buf);
+        assert_eq!(extract_cr3_orientation(&stream).is_ok(), expect_ok);
+        assert_eq!(extract_cr3_preview_data(&stream).is_ok(), expect_ok);
+    }
+}

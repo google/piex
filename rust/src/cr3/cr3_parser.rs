@@ -384,11 +384,17 @@ fn process_box<R: StreamInterface + ?Sized>(
         stream.get_data(header_offset_usize, &mut uuid)?;
 
         if uuid == UUID_MOOV {
+            if box_header.payload_length() < 16 {
+                return Err(PiexError::CorruptData("UUID MOOV box too small".to_string()));
+            }
             let next_off = box_header.header_offset.checked_add(16).ok_or_else(|| {
                 PiexError::CorruptData("UUID MOOV box offset overflow".to_string())
             })?;
             return Ok(next_off);
         } else if uuid == UUID_PRVW {
+            if box_header.payload_length() < 24 {
+                return Err(PiexError::CorruptData("UUID PRVW box too small".to_string()));
+            }
             let next_off = box_header.header_offset.checked_add(24).ok_or_else(|| {
                 PiexError::CorruptData("UUID PRVW box offset overflow".to_string())
             })?;
