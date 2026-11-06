@@ -216,13 +216,22 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
         (u64::from(length_32), header_off)
     };
 
+    let header_length = match header_offset.checked_sub(offset) {
+        Some(len) => len,
+        None => return Err(PiexError::InvalidBoxHeader { offset }),
+    };
+
+    if total_length < header_length {
+        return Err(PiexError::InvalidBoxHeader { offset });
+    }
+
     let next_box_offset = match offset.checked_add(total_length) {
         Some(val) => val,
         None => return Err(PiexError::InvalidBoxHeader { offset }),
     };
 
     let box_header = BoxHeader::new(box_type, offset, header_offset, next_box_offset);
-    if box_header.next_box_offset <= offset {
+    if !box_header.is_valid() {
         return Err(PiexError::InvalidBoxHeader { offset });
     }
 
@@ -249,6 +258,10 @@ pub fn find_next_box_with_tag<R: StreamInterface + ?Sized>(
 
         if box_header.next_box_offset <= offset {
             return Err(PiexError::InvalidBoxHeader { offset });
+        }
+
+        if box_header.next_box_offset > enclosing_box.next_box_offset {
+            return Ok(None);
         }
 
         if box_header.box_type == expected_tag {
