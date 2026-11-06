@@ -208,13 +208,6 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
             None => return Err(PiexError::InvalidBoxHeader { offset }),
         };
         (length_64, header_off)
-    } else if length_32 == 0 {
-        let total_len = (stream_len as u64).saturating_sub(offset);
-        let header_off = match offset.checked_add(8) {
-            Some(val) => val,
-            None => return Err(PiexError::InvalidBoxHeader { offset }),
-        };
-        (total_len, header_off)
     } else {
         let header_off = match offset.checked_add(8) {
             Some(val) => val,
