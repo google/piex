@@ -208,14 +208,10 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
             None => return Err(PiexError::InvalidBoxHeader { offset }),
         };
         (length_64, header_off)
-    } else if length_32 == 0 {
-        let total_len = (stream_len as u64).saturating_sub(offset);
-        let header_off = match offset.checked_add(8) {
-            Some(val) => val,
-            None => return Err(PiexError::InvalidBoxHeader { offset }),
-        };
-        (total_len, header_off)
     } else {
+        // Compact `length_32 == 0` (ISOBMFF box-to-EOF) is intentionally rejected via
+        // `total_length < header_length` below: CR3 uses `length_32 == 1` for large `mdat`
+        // boxes, FFI streams do not expose total length, and C++ `GetNextBox` rejects size 0.
         let header_off = match offset.checked_add(8) {
             Some(val) => val,
             None => return Err(PiexError::InvalidBoxHeader { offset }),
@@ -247,10 +243,12 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
 
 /// Scans for the next child box matching `expected_tag` within `enclosing_box`.
 ///
-/// Bounded scanning begins at `offset` and continues while `offset < enclosing_box.next_box_offset`.
+/// Bounded scanning begins at `offset` and continues while `offset <
+/// enclosing_box.next_box_offset`.
 ///
 /// # Errors
-/// Returns `PiexError::InvalidBoxHeader` if a child box header is corrupt or lacks monotonic progress.
+/// Returns `PiexError::InvalidBoxHeader` if a child box header is corrupt or lacks monotonic
+/// progress.
 pub fn find_next_box_with_tag<R: StreamInterface + ?Sized>(
     stream: &R,
     mut offset: u64,
