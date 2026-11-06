@@ -218,7 +218,7 @@ fn rust_is_raw(stream: Pin<&mut ffi::StreamInterface>) -> bool {
     catch_unwind(AssertUnwindSafe(|| {
         let adapter = CxxStreamAdapter::new(stream);
         let req_bytes = extractor::bytes_required_for_is_raw();
-        let mut header = [0u8; 10_000];
+        let mut header = vec![0u8; 10_000];
         let to_read = req_bytes.min(header.len());
         if adapter.get_data(0, &mut header[..to_read]).is_err() {
             return false;
@@ -236,7 +236,7 @@ fn rust_get_preview_image_data(
     catch_unwind(AssertUnwindSafe(|| {
         let adapter = CxxStreamAdapter::new(stream);
         let req_bytes = extractor::bytes_required_for_is_raw();
-        let mut header = [0u8; 10_000];
+        let mut header = vec![0u8; 10_000];
         let to_read = req_bytes.min(header.len());
         if adapter.get_data(0, &mut header[..to_read]).is_err() {
             return 1;
