@@ -122,26 +122,46 @@ fn process_jpeg_box<R: StreamInterface + ?Sized>(
     })
 }
 
+/// Byte offset of the 16-bit image width field from the start of a `CRAW` box.
+const CRAW_WIDTH_OFFSET: u64 = 32;
+/// Byte offset of the 16-bit image height field from the start of a `CRAW` box.
+const CRAW_HEIGHT_OFFSET: u64 = 34;
+/// Byte offset of the 16-bit content type field from the start of a `CRAW` box.
+const CRAW_CONTENT_TYPE_OFFSET: u64 = 86;
+/// Minimum total byte length of a `CRAW` box covering width, height, and content type.
+const CRAW_MIN_BOX_LEN: u64 = CRAW_CONTENT_TYPE_OFFSET + std::mem::size_of::<u16>() as u64;
+
 /// Reads image width, height, and content type from a Canon RAW (`CRAW`) box.
 fn process_craw_box<R: StreamInterface + ?Sized>(
     stream: &R,
     craw_box: &BoxHeader,
 ) -> Result<(u16, u16, u16), PiexError> {
+    let box_len = craw_box
+        .next_box_offset
+        .checked_sub(craw_box.offset)
+        .ok_or(PiexError::InvalidBoxHeader { offset: craw_box.offset })?;
+    if box_len < CRAW_MIN_BOX_LEN {
+        return Err(PiexError::CorruptData(
+            "CRAW box too small to contain image metadata".to_string(),
+        ));
+    }
+
     let width_offset = craw_box
         .offset
-        .checked_add(32)
+        .checked_add(CRAW_WIDTH_OFFSET)
         .ok_or_else(|| PiexError::CorruptData("CRAW box width offset overflow".to_string()))?;
     let width = read_u16_be(stream, width_offset)?;
 
     let height_offset = craw_box
         .offset
-        .checked_add(34)
+        .checked_add(CRAW_HEIGHT_OFFSET)
         .ok_or_else(|| PiexError::CorruptData("CRAW box height offset overflow".to_string()))?;
     let height = read_u16_be(stream, height_offset)?;
 
-    let content_type_offset = craw_box.offset.checked_add(86).ok_or_else(|| {
-        PiexError::CorruptData("CRAW box content_type offset overflow".to_string())
-    })?;
+    let content_type_offset =
+        craw_box.offset.checked_add(CRAW_CONTENT_TYPE_OFFSET).ok_or_else(|| {
+            PiexError::CorruptData("CRAW box content_type offset overflow".to_string())
+        })?;
     let content_type = read_u16_be(stream, content_type_offset)?;
 
     Ok((width, height, content_type))
@@ -223,6 +243,11 @@ fn process_stbl_box<R: StreamInterface + ?Sized>(
 
     if craw_box.box_type != BoxType::CRAW {
         return Ok(());
+    }
+    if craw_box.next_box_offset > stsd_box.next_box_offset {
+        return Err(PiexError::CorruptData(
+            "CRAW sample entry exceeds enclosing stsd box".to_string(),
+        ));
     }
 
     let (width, height, content_type) = process_craw_box(stream, &craw_box)?;
@@ -366,6 +391,29 @@ fn parse_exif_exif_ifd<R: StreamInterface + ?Sized>(
     Ok(())
 }
 
+/// Payload prefix byte count in a Canon `uuid` MOOV container box (16-byte UUID).
+const UUID_MOOV_PREFIX_LEN: u64 = UUID_MOOV.len() as u64;
+
+/// Payload prefix byte count in a Canon `uuid` PRVW container box
+/// (16-byte UUID plus 8 bytes before the nested `PRVW` child box).
+const UUID_PRVW_PREFIX_LEN: u64 = UUID_PRVW.len() as u64 + 8;
+
+/// Returns the first child-box offset inside `box_header` after a `prefix_len`-byte
+/// UUID container prefix, rejecting headers that do not enclose the full prefix.
+fn uuid_child_offset(box_header: &BoxHeader, prefix_len: u64) -> Result<u64, PiexError> {
+    let payload_len = box_header
+        .next_box_offset
+        .checked_sub(box_header.header_offset)
+        .ok_or(PiexError::InvalidBoxHeader { offset: box_header.offset })?;
+    if payload_len < prefix_len {
+        return Err(PiexError::InvalidBoxHeader { offset: box_header.offset });
+    }
+    box_header
+        .header_offset
+        .checked_add(prefix_len)
+        .ok_or(PiexError::InvalidBoxHeader { offset: box_header.offset })
+}
+
 /// Reads and dispatches processing for an individual ISOBMFF box at `box_header`.
 fn process_box<R: StreamInterface + ?Sized>(
     stream: &R,
@@ -383,19 +431,11 @@ fn process_box<R: StreamInterface + ?Sized>(
             })?;
         stream.get_data(header_offset_usize, &mut uuid)?;
 
-        if uuid == UUID_MOOV {
-            let next_off = box_header.header_offset.checked_add(16).ok_or_else(|| {
-                PiexError::CorruptData("UUID MOOV box offset overflow".to_string())
-            })?;
-            return Ok(next_off);
-        } else if uuid == UUID_PRVW {
-            let next_off = box_header.header_offset.checked_add(24).ok_or_else(|| {
-                PiexError::CorruptData("UUID PRVW box offset overflow".to_string())
-            })?;
-            return Ok(next_off);
-        } else {
-            return Ok(box_header.next_box_offset);
-        }
+        return match uuid {
+            UUID_MOOV => uuid_child_offset(box_header, UUID_MOOV_PREFIX_LEN),
+            UUID_PRVW => uuid_child_offset(box_header, UUID_PRVW_PREFIX_LEN),
+            _ => Ok(box_header.next_box_offset),
+        };
     }
 
     if should_process_children(box_header.box_type) {
