@@ -5,7 +5,7 @@ use std::io::Cursor;
 use piex::cr3::{
     find_next_box_with_tag, read_next_box, BoxHeader, BoxType, Uuid, UUID_MOOV, UUID_PRVW,
 };
-use piex::stream::{ByteSliceStream, StreamAdapter};
+use piex::stream::{ByteSliceStream, StreamAdapter, StreamInterface};
 use piex::types::PiexError;
 
 // ============================================================================
@@ -604,4 +604,96 @@ fn test_box_reader_with_stream_adapter() {
     assert_eq!(header.offset, 0);
     assert_eq!(header.header_offset, 8);
     assert_eq!(header.next_box_offset, 24);
+}
+
+struct SparseBoxStream {
+    chunks: Vec<(usize, Vec<u8>)>,
+    total_len: usize,
+}
+
+impl StreamInterface for SparseBoxStream {
+    fn get_data(&self, offset: usize, data: &mut [u8]) -> Result<(), PiexError> {
+        let end = offset.checked_add(data.len()).ok_or(PiexError::OutOfBounds {
+            requested_offset: offset,
+            requested_size: data.len(),
+            total_len: self.total_len,
+        })?;
+        for (base, bytes) in &self.chunks {
+            if offset >= *base && end <= base.saturating_add(bytes.len()) {
+                data.copy_from_slice(&bytes[offset - base..end - base]);
+                return Ok(());
+            }
+        }
+        Err(PiexError::OutOfBounds {
+            requested_offset: offset,
+            requested_size: data.len(),
+            total_len: self.total_len,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.total_len
+    }
+}
+
+#[test]
+fn test_read_next_box_extended_64bit_upper_32_bits_preserved() {
+    let offset = 24u64;
+    let valid_lengths = [
+        u64::from(u32::MAX),
+        1u64 << 32,
+        (1u64 << 32) | 16,
+        (0x1234_5678u64 << 32) | 0x9ABC_DEF0u64,
+        u64::MAX - offset,
+    ];
+    for len64 in valid_lengths {
+        let mut hdr = Vec::with_capacity(16);
+        hdr.extend_from_slice(&1u32.to_be_bytes());
+        hdr.extend_from_slice(b"mdat");
+        hdr.extend_from_slice(&len64.to_be_bytes());
+        let stream = SparseBoxStream { chunks: vec![(offset as usize, hdr)], total_len: usize::MAX };
+        let parsed = read_next_box(&stream, offset).unwrap().unwrap();
+        assert_eq!(parsed.box_type, BoxType::MDAT);
+        assert_eq!(parsed.offset, offset);
+        assert_eq!(parsed.header_offset, offset + 16);
+        assert_eq!(parsed.next_box_offset, offset + len64);
+        assert_eq!(parsed.total_length(), len64);
+    }
+
+    for overflow_len64 in [u64::MAX - offset + 1, u64::MAX] {
+        let mut hdr = Vec::with_capacity(16);
+        hdr.extend_from_slice(&1u32.to_be_bytes());
+        hdr.extend_from_slice(b"mdat");
+        hdr.extend_from_slice(&overflow_len64.to_be_bytes());
+        let stream = SparseBoxStream { chunks: vec![(offset as usize, hdr)], total_len: usize::MAX };
+        assert!(matches!(
+            read_next_box(&stream, offset),
+            Err(PiexError::InvalidBoxHeader { offset: 24 })
+        ));
+    }
+
+    // Verify > 4 GiB sibling box traversal via find_next_box_with_tag.
+    let child1_len = (1u64 << 32) + 16;
+    let child2_off = 16 + child1_len;
+    let moov_len = child2_off + 16;
+    let make_ext = |tag: &[u8; 4], len: u64| {
+        let mut b = Vec::with_capacity(16);
+        b.extend_from_slice(&1u32.to_be_bytes());
+        b.extend_from_slice(tag);
+        b.extend_from_slice(&len.to_be_bytes());
+        b
+    };
+    let stream = SparseBoxStream {
+        chunks: vec![
+            (0, make_ext(b"moov", moov_len)),
+            (16, make_ext(b"free", child1_len)),
+            (child2_off as usize, make_ext(b"trak", 16)),
+        ],
+        total_len: (moov_len as usize) + 16,
+    };
+    let moov = read_next_box(&stream, 0).unwrap().unwrap();
+    let trak =
+        find_next_box_with_tag(&stream, moov.header_offset, &moov, BoxType::TRAK).unwrap().unwrap();
+    assert_eq!(trak.offset, child2_off);
+    assert_eq!(trak.next_box_offset, moov_len);
 }

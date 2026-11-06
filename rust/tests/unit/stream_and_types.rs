@@ -825,3 +825,37 @@ fn test_zero_length_reads_at_invalid_offsets() {
     assert!(adapter.get_data(6, &mut empty_buf).is_err());
     assert!(adapter.get_data(usize::MAX, &mut empty_buf).is_err());
 }
+
+#[test]
+fn test_byte_slice_sub_stream_after_later_reads_clamps_bounds() {
+    let data: [u8; 16] = core::array::from_fn(|i| 0xA0 + i as u8);
+    let root = ByteSliceStream::new(&data);
+
+    for &(prior_read_offset, sub_pos, sub_len) in &[
+        (0usize, 6usize, 4usize),
+        (0, 2, 6),
+        (4, 5, 2),
+        (4, 2, 8),
+        (8, 2, 7),
+        (8, 2, 6),
+        (8, 2, 5),
+        (12, 2, 4),
+        (12, 2, 0),
+    ] {
+        let mut warm = [0u8; 4];
+        root.get_data(prior_read_offset, &mut warm).unwrap();
+        let sub = root.sub_stream(sub_pos, sub_len).unwrap();
+        assert_eq!(sub.len(), sub_len);
+
+        for i in 0..=(data.len() - sub_pos) {
+            let mut probe = [0u8; 1];
+            let res = sub.get_data(i, &mut probe);
+            if i < sub_len {
+                assert_eq!(res, Ok(()));
+                assert_eq!(probe[0], data[sub_pos + i]);
+            } else {
+                assert!(matches!(res, Err(PiexError::OutOfBounds { .. })));
+            }
+        }
+    }
+}
