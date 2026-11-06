@@ -473,6 +473,7 @@ impl From<&piex_preview_image_data_t> for PreviewImageData {
             focal_length: Rational::from(data.focal_length),
             gps: GpsData::from(&data.gps),
             cfa_pattern_dim: data.cfa_pattern_dim,
+            cfa_pattern_dim_set: false,
         }
     }
 }

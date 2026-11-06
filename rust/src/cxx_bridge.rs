@@ -88,6 +88,8 @@ pub mod ffi {
         pub gps: GpsData,
         /// Color Filter Array (CFA) pattern dimensions (width, height).
         pub cfa_pattern_dim: [u32; 2],
+        /// True when a valid 2-element `CFARepeatPatternDim` tag was parsed.
+        pub cfa_pattern_dim_set: bool,
     }
 
     unsafe extern "C++" {

@@ -857,3 +857,179 @@ fn test_regression_crash_04_tiff_parser_truncated_ifd_bounds() {
     // Should return error for truncated IFD entries rather than panicking or out of bounds access
     assert!(res.is_err());
 }
+
+#[test]
+fn test_parse_sub_ifd_with_tiff_ifd_type_single_and_multiple() {
+    for endian in [Endian::Little, Endian::Big] {
+        // 1. Single inline SubIFD encoded with TiffType::Ifd (13).
+        let mut writer = TiffWriter::new(endian);
+        writer.write_header(8);
+        let sub_ifd_offset = 26u32;
+        writer.buf.extend_from_slice(&writer.pack_u16(1));
+        writer.write_entry_offset(EXIF_TAG_SUB_IFDS as u16, TiffType::Ifd, 1, sub_ifd_offset);
+        writer.buf.extend_from_slice(&writer.pack_u32(0));
+        assert_eq!(writer.buf.len(), sub_ifd_offset as usize);
+
+        writer.buf.extend_from_slice(&writer.pack_u16(4));
+        writer.write_entry_offset(TIFF_TAG_IMAGE_WIDTH as u16, TiffType::Long, 1, 4000);
+        writer.write_entry_offset(TIFF_TAG_IMAGE_LENGTH as u16, TiffType::Long, 1, 3000);
+        writer.write_entry_offset(TIFF_TAG_JPEG_OFFSET as u16, TiffType::Long, 1, 7);
+        writer.write_entry_offset(TIFF_TAG_JPEG_BYTE_COUNT as u16, TiffType::Long, 1, 6);
+        writer.buf.extend_from_slice(&writer.pack_u32(0));
+
+        let stream = ByteSliceStream::new(&writer.buf);
+        let parser = TiffParser::new(&stream).unwrap();
+        let desired = [
+            EXIF_TAG_SUB_IFDS,
+            TIFF_TAG_IMAGE_WIDTH,
+            TIFF_TAG_IMAGE_LENGTH,
+            TIFF_TAG_JPEG_OFFSET,
+            TIFF_TAG_JPEG_BYTE_COUNT,
+        ];
+        let content = parser.parse(&desired, 2).unwrap();
+        assert_eq!(content.tiff_directories.len(), 1);
+        assert_eq!(content.tiff_directories[0].sub_directories().len(), 1);
+
+        let mut preview_data = PreviewImageData::default();
+        assert!(parser.get_preview_image_data(&content, &mut preview_data).is_ok());
+        assert_eq!(preview_data.full_width, 4000);
+        assert_eq!(preview_data.full_height, 3000);
+        assert_eq!(preview_data.thumbnail.offset, 7);
+        assert_eq!(preview_data.thumbnail.length, 6);
+
+        // 2. Multiple out-of-line SubIFDs encoded with TiffType::Ifd (13).
+        let mut multi = TiffWriter::new(endian);
+        multi.write_header(8);
+        let offsets_array_pos = 26u32;
+        let sub_ifd_0_offset = 34u32;
+        let sub_ifd_1_offset = sub_ifd_0_offset + 18;
+        multi.buf.extend_from_slice(&multi.pack_u16(1));
+        multi.write_entry_offset(EXIF_TAG_SUB_IFDS as u16, TiffType::Ifd, 2, offsets_array_pos);
+        multi.buf.extend_from_slice(&multi.pack_u32(0));
+        assert_eq!(multi.buf.len(), offsets_array_pos as usize);
+
+        let off0 = multi.pack_u32(sub_ifd_0_offset);
+        let off1 = multi.pack_u32(sub_ifd_1_offset);
+        multi.buf.extend_from_slice(&off0);
+        multi.buf.extend_from_slice(&off1);
+        assert_eq!(multi.buf.len(), sub_ifd_0_offset as usize);
+
+        multi.buf.extend_from_slice(&multi.pack_u16(1));
+        multi.write_entry_offset(TIFF_TAG_SUB_FILE_TYPE as u16, TiffType::Long, 1, 1);
+        multi.buf.extend_from_slice(&multi.pack_u32(0));
+        assert_eq!(multi.buf.len(), sub_ifd_1_offset as usize);
+
+        multi.buf.extend_from_slice(&multi.pack_u16(3));
+        multi.write_entry_offset(TIFF_TAG_SUB_FILE_TYPE as u16, TiffType::Long, 1, 0);
+        multi.write_entry_offset(TIFF_TAG_IMAGE_WIDTH as u16, TiffType::Long, 1, 6000);
+        multi.write_entry_offset(TIFF_TAG_IMAGE_LENGTH as u16, TiffType::Long, 1, 4000);
+        multi.buf.extend_from_slice(&multi.pack_u32(0));
+
+        let multi_stream = ByteSliceStream::new(&multi.buf);
+        let multi_parser = TiffParser::new(&multi_stream).unwrap();
+        let multi_desired = [
+            EXIF_TAG_SUB_IFDS,
+            TIFF_TAG_SUB_FILE_TYPE,
+            TIFF_TAG_IMAGE_WIDTH,
+            TIFF_TAG_IMAGE_LENGTH,
+        ];
+        let multi_content = multi_parser.parse(&multi_desired, 2).unwrap();
+        assert_eq!(multi_content.tiff_directories.len(), 1);
+        assert_eq!(multi_content.tiff_directories[0].sub_directories().len(), 2);
+
+        let mut multi_preview = PreviewImageData::default();
+        assert!(multi_parser.get_preview_image_data(&multi_content, &mut multi_preview).is_ok());
+        assert_eq!(multi_preview.full_width, 6000);
+        assert_eq!(multi_preview.full_height, 4000);
+
+        // 3. TiffType::Short (3) for EXIF_TAG_SUB_IFDS is ignored (matching C++ ParseSubIfds).
+        let mut short_writer = TiffWriter::new(endian);
+        short_writer.write_header(8);
+        short_writer.buf.extend_from_slice(&short_writer.pack_u16(1));
+        let packed_short = short_writer.pack_u16(26);
+        short_writer.write_entry_inline(
+            EXIF_TAG_SUB_IFDS as u16,
+            TiffType::Short,
+            1,
+            &packed_short,
+        );
+        short_writer.buf.extend_from_slice(&short_writer.pack_u32(0));
+        let short_stream = ByteSliceStream::new(&short_writer.buf);
+        let short_parser = TiffParser::new(&short_stream).unwrap();
+        let short_content = short_parser.parse(&[EXIF_TAG_SUB_IFDS], 2).unwrap();
+        assert!(short_content.tiff_directories[0].sub_directories().is_empty());
+
+        // 4. Non-zero tiff_offset resolves SubIFDs relative to tiff_offset and rejects u32
+        //    overflow.
+        let tiff_offset = 16u32;
+        let mut embedded = vec![0xAAu8; tiff_offset as usize];
+        embedded.extend_from_slice(&writer.buf);
+        let embedded_stream = ByteSliceStream::new(&embedded);
+        let embedded_parser = TiffParser::with_offset(&embedded_stream, tiff_offset).unwrap();
+        let embedded_content = embedded_parser
+            .parse(&[EXIF_TAG_SUB_IFDS, TIFF_TAG_IMAGE_WIDTH, TIFF_TAG_IMAGE_LENGTH], 2)
+            .unwrap();
+        assert_eq!(embedded_content.tiff_directories[0].sub_directories().len(), 1);
+
+        // 5. Cyclic next_ifd_offset pointing back to IFD0 stops after 1 IFD.
+        let mut cyclic = TiffWriter::new(endian);
+        cyclic.write_header(8);
+        cyclic.buf.extend_from_slice(&cyclic.pack_u16(1));
+        cyclic.write_entry_offset(TIFF_TAG_IMAGE_WIDTH as u16, TiffType::Long, 1, 3200);
+        cyclic.buf.extend_from_slice(&cyclic.pack_u32(8));
+        let cyclic_stream = ByteSliceStream::new(&cyclic.buf);
+        let cyclic_parser = TiffParser::new(&cyclic_stream).unwrap();
+        let cyclic_content = cyclic_parser.parse(&[TIFF_TAG_IMAGE_WIDTH], 2).unwrap();
+        assert_eq!(cyclic_content.tiff_directories.len(), 1);
+    }
+}
+
+#[test]
+fn test_cfa_pattern_dim_set_only_when_two_element_tag_present() {
+    let mut header = Vec::new();
+    header.extend_from_slice(b"II\x2A\x00\x08\x00\x00\x00");
+    let stream = ByteSliceStream::new(&header);
+
+    // 1. Tag absent -> cfa_pattern_dim_set remains false and caller value untouched.
+    {
+        let dir = TiffDirectory::new(Endian::Little);
+        let mut content = TiffContent::new();
+        content.tiff_directories.push(dir);
+        let parser = TiffParser::new(&stream).unwrap();
+        let mut preview_data = PreviewImageData::default();
+        preview_data.cfa_pattern_dim = [9, 8];
+        parser.get_preview_image_data(&content, &mut preview_data).unwrap();
+        assert!(!preview_data.cfa_pattern_dim_set);
+        assert_eq!(preview_data.cfa_pattern_dim, [9, 8]);
+    }
+
+    // 2. Tag present with 1 element -> cfa_pattern_dim_set remains false.
+    {
+        let mut dir = TiffDirectory::new(Endian::Little);
+        dir.add_entry(TIFF_TAG_CFA_PATTERN_DIM, TiffType::Short, 1, 0, 2u16.to_le_bytes().to_vec());
+        let mut content = TiffContent::new();
+        content.tiff_directories.push(dir);
+        let parser = TiffParser::new(&stream).unwrap();
+        let mut preview_data = PreviewImageData::default();
+        preview_data.cfa_pattern_dim = [9, 8];
+        parser.get_preview_image_data(&content, &mut preview_data).unwrap();
+        assert!(!preview_data.cfa_pattern_dim_set);
+        assert_eq!(preview_data.cfa_pattern_dim, [9, 8]);
+    }
+
+    // 3. Tag present with 2 elements -> cfa_pattern_dim_set is true and values updated.
+    {
+        let mut dir = TiffDirectory::new(Endian::Little);
+        let mut cfa_bytes = Vec::new();
+        cfa_bytes.extend_from_slice(&2u16.to_le_bytes());
+        cfa_bytes.extend_from_slice(&4u16.to_le_bytes());
+        dir.add_entry(TIFF_TAG_CFA_PATTERN_DIM, TiffType::Short, 2, 0, cfa_bytes);
+        let mut content = TiffContent::new();
+        content.tiff_directories.push(dir);
+        let parser = TiffParser::new(&stream).unwrap();
+        let mut preview_data = PreviewImageData::default();
+        parser.get_preview_image_data(&content, &mut preview_data).unwrap();
+        assert!(preview_data.cfa_pattern_dim_set);
+        assert_eq!(preview_data.cfa_pattern_dim, [2, 4]);
+    }
+}

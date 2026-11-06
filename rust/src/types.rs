@@ -327,6 +327,7 @@ impl Default for PreviewImageData {
             focal_length: Rational::default(),
             gps: GpsData::default(),
             cfa_pattern_dim: [0, 0],
+            cfa_pattern_dim_set: false,
         }
     }
 }
