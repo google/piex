@@ -5,7 +5,7 @@ use std::io::Cursor;
 use piex::cr3::{
     find_next_box_with_tag, read_next_box, BoxHeader, BoxType, Uuid, UUID_MOOV, UUID_PRVW,
 };
-use piex::stream::{ByteSliceStream, StreamAdapter};
+use piex::stream::{ByteSliceStream, StreamAdapter, StreamInterface};
 use piex::types::PiexError;
 
 // ============================================================================
@@ -236,44 +236,82 @@ fn test_read_next_box_extended_header_at_nonzero_offset() {
 }
 
 // ============================================================================
-// 5. Box Extending to EOF (`length_32 == 0`)
+// 5. Compact Box with `length_32 == 0` Rejected
 // ============================================================================
 
 #[test]
-fn test_read_next_box_length_zero_extends_to_eof() {
+fn test_read_next_box_length_zero_rejected() {
     let mut buf = Vec::new();
-    // length_32 = 0 indicates box extends to the end of the stream
+    // C++ GetNextBox rejects `length_32 == 0` because total_length (0) < header_length (8)
     buf.extend_from_slice(&0u32.to_be_bytes());
     buf.extend_from_slice(b"mdat");
     buf.extend_from_slice(&[0x12; 32]); // 40 bytes total stream length
 
     let mut stream = ByteSliceStream::new(&buf);
-    let header = read_next_box(&mut stream, 0).unwrap().unwrap();
-
-    assert_eq!(header.box_type, BoxType::MDAT);
-    assert_eq!(header.offset, 0);
-    assert_eq!(header.header_offset, 8);
-    assert_eq!(header.next_box_offset, 40);
-    assert_eq!(header.total_length(), 40);
-    assert_eq!(header.payload_length(), 32);
+    let res = read_next_box(&mut stream, 0);
+    assert!(
+        matches!(res, Err(PiexError::InvalidBoxHeader { offset: 0 })),
+        "Expected InvalidBoxHeader for compact size 0 at offset 0"
+    );
 }
 
 #[test]
-fn test_read_next_box_length_zero_at_nonzero_offset() {
+fn test_read_next_box_length_zero_at_nonzero_offset_rejected() {
     let mut buf = vec![0x00u8; 20];
     buf.extend_from_slice(&0u32.to_be_bytes());
     buf.extend_from_slice(b"trak");
     buf.extend_from_slice(&[0x34; 80]); // Total stream length 108
 
     let mut stream = ByteSliceStream::new(&buf);
-    let header = read_next_box(&mut stream, 20).unwrap().unwrap();
+    let res = read_next_box(&mut stream, 20);
+    assert!(
+        matches!(res, Err(PiexError::InvalidBoxHeader { offset: 20 })),
+        "Expected InvalidBoxHeader for compact size 0 at offset 20"
+    );
+}
 
-    assert_eq!(header.box_type, BoxType::TRAK);
-    assert_eq!(header.offset, 20);
-    assert_eq!(header.header_offset, 28);
-    assert_eq!(header.next_box_offset, 108);
-    assert_eq!(header.total_length(), 88);
-    assert_eq!(header.payload_length(), 80);
+#[test]
+fn test_read_next_box_length_zero_on_unbounded_ffi_stream_rejected() {
+    struct UnboundedFfiLikeStream<'a>(&'a [u8]);
+    impl StreamInterface for UnboundedFfiLikeStream<'_> {
+        fn get_data(&self, offset: usize, buf: &mut [u8]) -> Result<(), PiexError> {
+            let end = offset.checked_add(buf.len()).ok_or(PiexError::StreamReadFailed {
+                offset,
+                expected: buf.len(),
+                available: 0,
+            })?;
+            if end > self.0.len() {
+                return Err(PiexError::StreamReadFailed {
+                    offset,
+                    expected: buf.len(),
+                    available: 0,
+                });
+            }
+            buf.copy_from_slice(&self.0[offset..end]);
+            Ok(())
+        }
+        fn len(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    let mut buf = Vec::new();
+    // Offset 0: compact size 0 CMT1 box
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.extend_from_slice(b"CMT1");
+    // Offset 8: compact size 0 mdat box
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.extend_from_slice(b"mdat");
+    buf.extend_from_slice(&[0u8; 32]);
+
+    let stream = UnboundedFfiLikeStream(&buf);
+    for offset in [0u64, 8u64] {
+        let res = read_next_box(&stream, offset);
+        assert!(
+            matches!(res, Err(PiexError::InvalidBoxHeader { offset: off }) if off == offset),
+            "Expected InvalidBoxHeader on usize::MAX stream at offset {offset}"
+        );
+    }
 }
 
 // ============================================================================
@@ -334,8 +372,8 @@ fn test_read_next_box_truncated_extended_header_fewer_than_16_bytes() {
 
 #[test]
 fn test_read_next_box_invalid_compact_sizes() {
-    // Sizes 2..8 are invalid because header length is 8
-    for size in 2u32..8u32 {
+    // Sizes 0 and 2..8 are invalid because compact header length is 8
+    for size in [0u32, 2, 3, 4, 5, 6, 7] {
         let mut buf = Vec::new();
         buf.extend_from_slice(&size.to_be_bytes());
         buf.extend_from_slice(b"ftyp");
@@ -353,7 +391,7 @@ fn test_read_next_box_invalid_compact_sizes() {
 #[test]
 fn test_read_next_box_invalid_extended_sizes() {
     // Sizes < 16 for extended headers are invalid because extended header is 16 bytes
-    let invalid_sizes: &[u64] = &[0, 1, 8, 15];
+    let invalid_sizes: &[u64] = &[0, 1, 2, 7, 8, 9, 12, 15];
 
     for &size in invalid_sizes {
         let mut buf = Vec::new();
@@ -367,6 +405,21 @@ fn test_read_next_box_invalid_extended_sizes() {
         assert!(
             matches!(res, Err(PiexError::InvalidBoxHeader { offset: 0 })),
             "Expected InvalidBoxHeader for invalid extended size {size}"
+        );
+    }
+
+    // Extended sizes whose next_box_offset = offset + length_64 overflows u64
+    let mut prefix_and_ext = vec![0u8; 24];
+    prefix_and_ext.extend_from_slice(&1u32.to_be_bytes());
+    prefix_and_ext.extend_from_slice(b"free");
+    prefix_and_ext.extend_from_slice(&[0u8; 8]);
+    for overflow_size in [u64::MAX - 23, u64::MAX - 16, u64::MAX] {
+        prefix_and_ext[32..40].copy_from_slice(&overflow_size.to_be_bytes());
+        let stream = ByteSliceStream::new(&prefix_and_ext);
+        let res = read_next_box(&stream, 24);
+        assert!(
+            matches!(res, Err(PiexError::InvalidBoxHeader { offset: 24 })),
+            "Expected InvalidBoxHeader for overflowing extended size {overflow_size}"
         );
     }
 }
@@ -497,8 +550,8 @@ fn test_find_next_box_with_tag_detects_non_advancing_progress() {
     buf.extend_from_slice(b"moov");
 
     // Corrupted child box with non-advancing box specification
-    // Offset 8: child box has size 0, but total stream is 40 -> total_length becomes 32, but offset doesn't advance if size is invalid
-    // Let's create invalid short length 4
+    // Offset 8: child box has size 0, but total stream is 40 -> total_length becomes 32, but offset
+    // doesn't advance if size is invalid Let's create invalid short length 4
     buf.extend_from_slice(&4u32.to_be_bytes());
     buf.extend_from_slice(b"bad_");
     buf.resize(40, 0u8);
