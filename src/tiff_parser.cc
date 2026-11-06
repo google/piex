@@ -16,10 +16,14 @@
 
 #include "src/tiff_parser.h"
 
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <string>
+#include <vector>
 
+#include "src/piex_types.h"
 #include "src/tiff_directory/tiff_directory.h"
 
 namespace piex {
@@ -161,8 +165,24 @@ bool FillPreviewImageData(const TiffDirectory& tiff_directory,
     }
   }
 
-  success &= GetFullDimension32(tiff_directory, &preview_image_data->full_width,
-                                &preview_image_data->full_height);
+  // FillPreviewImageData will be called multiple times depending on the number
+  // of IFDs. Extracting the full resolution is best-effort.
+  std::uint32_t full_width = 0;
+  std::uint32_t full_height = 0;
+  // The sub file type needs to be 0 (main image) to contain a valid full
+  // dimensions. This is important in particular for DNG.
+  std::uint32_t sub_file_type;
+  bool directory_describes_secondary =
+      tiff_directory.Has(kTiffTagSubFileType) &&
+      tiff_directory.Get(kTiffTagSubFileType, &sub_file_type) &&
+      sub_file_type != 0;
+  if (!directory_describes_secondary &&
+      GetFullDimension32(tiff_directory, &full_width, &full_height) &&
+      full_width > preview_image_data->full_width &&
+      full_height > preview_image_data->full_height) {
+    preview_image_data->full_width = full_width;
+    preview_image_data->full_height = full_height;
+  }
 
   if (tiff_directory.Has(kTiffTagMake)) {
     success &= tiff_directory.Get(kTiffTagMake, &preview_image_data->maker);
@@ -548,16 +568,6 @@ bool GetExifOrientation(StreamInterface* stream, const std::uint32_t offset,
 
 bool GetFullDimension32(const TiffDirectory& tiff_directory,
                         std::uint32_t* width, std::uint32_t* height) {
-  // The sub file type needs to be 0 (main image) to contain a valid full
-  // dimensions. This is important in particular for DNG.
-  if (tiff_directory.Has(kTiffTagSubFileType)) {
-    std::uint32_t sub_file_type;
-    if (!tiff_directory.Get(kTiffTagSubFileType, &sub_file_type) ||
-        sub_file_type != 0) {
-      return false;
-    }
-  }
-
   if (tiff_directory.Has(kExifTagDefaultCropSize)) {
     if (!GetFullCropDimension(tiff_directory, width, height)) {
       return false;

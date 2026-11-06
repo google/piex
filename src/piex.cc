@@ -16,14 +16,18 @@
 
 #include "src/piex.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
-#include <limits>
-#include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "src/binary_parse/range_checked_byte_ptr.h"
 #include "src/image_type_recognition/image_type_recognition_lite.h"
 #include "src/piex_cr3.h"
+#include "src/piex_types.h"
+#include "src/tiff_directory/tiff_directory.h"
 #include "src/tiff_parser.h"
 
 namespace piex {
@@ -415,9 +419,10 @@ Error DngGetPreviewData(StreamInterface* stream,
   // Some thumbnails from DngCreator are larger than the specified 256 pixel.
   const int kDngThumbnailMaxDimension = 512;
 
-  const TagSet extended_tags = {
-      kExifTagDefaultCropSize, kTiffTagImageWidth,   kTiffTagImageLength,
-      kTiffTagStripByteCounts, kTiffTagStripOffsets, kTiffTagSubIfd};
+  const TagSet extended_tags = {kExifTagDefaultCropSize, kTiffTagSubFileType,
+                                kTiffTagImageWidth,      kTiffTagImageLength,
+                                kTiffTagStripByteCounts, kTiffTagStripOffsets,
+                                kTiffTagSubIfd};
 
   TiffContent tiff_content;
   const std::uint32_t kNumberOfIfds = 3;

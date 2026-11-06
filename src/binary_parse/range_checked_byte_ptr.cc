@@ -251,12 +251,15 @@ void RangeCheckedBytePtr::restrictPageToSubArray() const {
 
   // Does the end of the page lie beyond the end of the sub-array?
   if (page_begin_offset_ + current_page_len_ > sub_array_end_) {
-    // Reduce length of page accordingly.
-    size_t new_len = sub_array_end_ - page_begin_offset_;
-    if (new_len > current_page_len_) {
-      new_len = current_page_len_;
+    // Reduce length of page accordingly. The page can start beyond the end of
+    // the sub-array, in which case the subtraction below would wrap around, so
+    // handle that case explicitly: no part of the page is inside the
+    // sub-array.
+    if (page_begin_offset_ >= sub_array_end_) {
+      current_page_len_ = 0;
+    } else {
+      current_page_len_ = sub_array_end_ - page_begin_offset_;
     }
-    current_page_len_ = new_len;
   }
 }
 

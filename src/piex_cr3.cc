@@ -20,9 +20,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <unordered_set>
+#include <set>
 
-#include "src/binary_parse/range_checked_byte_ptr.h"
 #include "src/piex_types.h"
 #include "src/tiff_directory/tiff_directory.h"
 #include "src/tiff_parser.h"
@@ -120,8 +119,8 @@ bool Get64u(StreamInterface* stream, size_t offset, std::uint64_t* value) {
     *value = (data[0] * 0x1000000u) | (data[1] * 0x10000u) |
              (data[2] * 0x100u) | data[3];
     *value <<= 32;
-    *value = (data[4] * 0x1000000u) | (data[5] * 0x10000u) |
-             (data[6] * 0x100u) | data[7];
+    *value |= (data[4] * 0x1000000u) | (data[5] * 0x10000u) |
+              (data[6] * 0x100u) | data[7];
     return true;
   } else {
     return false;
@@ -251,15 +250,28 @@ Box GetNextBox(StreamInterface* stream, size_t offset) {
     // Compact size.
     length = length_32;
   }
+  // The box must be large enough to contain its own header. Otherwise the next
+  // box would be read from within this box's header, misaligning the parser.
+  // Also reject sizes for which the offset of the next box would overflow.
+  if (length < header_offset ||
+      length > std::numeric_limits<size_t>::max() - offset) {
+    return Box();
+  }
   return Box(tag, offset, header_offset, length);
 }
 
 // Searches for the next box with the given tag.
 Box GetNextBoxWithTag(StreamInterface* stream, size_t offset,
-                      const BoxTag& expected_tag) {
+                      const Box& enclosing_box, const BoxTag& expected_tag) {
   while (true) {
     Box box = GetNextBox(stream, offset);
-    if (!box.IsValid() || box.tag() == expected_tag) {
+    if (!box.IsValid()) {
+      return Box();
+    }
+    if (box.next_box_offset() > enclosing_box.next_box_offset()) {
+      return Box();
+    }
+    if (box.tag() == expected_tag) {
       return box;
     }
     offset = box.next_box_offset();
@@ -270,16 +282,24 @@ Box GetNextBoxWithTag(StreamInterface* stream, size_t offset,
 bool ProcessCrawBox(StreamInterface* stream, const Box& craw_box,
                     uint16_t* width, uint16_t* height, uint16_t* content_type) {
   constexpr size_t kWidthOffset = 32;
+  constexpr size_t kHeightOffset = 34;
+  constexpr size_t kTypeOffset = 86;
+  // The box must be large enough to contain all the fields read below,
+  // otherwise data beyond the end of the CRAW box would be misinterpreted.
+  if (craw_box.next_box_offset() < craw_box.offset() ||
+      craw_box.next_box_offset() - craw_box.offset() <
+          kTypeOffset + sizeof(*content_type)) {
+    return false;
+  }
+
   if (!Get16u(stream, craw_box.offset() + kWidthOffset, width)) {
     return false;
   }
 
-  constexpr size_t kHeightOffset = 34;
   if (!Get16u(stream, craw_box.offset() + kHeightOffset, height)) {
     return false;
   }
 
-  constexpr size_t kTypeOffset = 86;
   if (!Get16u(stream, craw_box.offset() + kTypeOffset, content_type)) {
     return false;
   }
@@ -346,7 +366,8 @@ bool ProcessCo64(StreamInterface* stream, const Box& co64_box,
 //   co64 (offset of embedded image, relative to mdat box)
 bool ProcessStblBox(StreamInterface* stream, const Box& stbl_box,
                     ProcessData* data) {
-  Box stsd_box = GetNextBoxWithTag(stream, stbl_box.header_offset(), kStsdTag);
+  Box stsd_box =
+      GetNextBoxWithTag(stream, stbl_box.header_offset(), stbl_box, kStsdTag);
   if (!stsd_box.IsValid()) {
     return false;
   }
@@ -357,6 +378,10 @@ bool ProcessStblBox(StreamInterface* stream, const Box& stbl_box,
   }
   if (craw_box.tag() != kCrawTag) {
     return true;
+  }
+  // The CRAW box is a sample entry and must be contained in the stsd box.
+  if (craw_box.next_box_offset() > stsd_box.next_box_offset()) {
+    return false;
   }
   // CRAW contains info about the full-size image embedded in the mdat box.
   // The image is either JPEG or HEVC.
@@ -376,7 +401,7 @@ bool ProcessStblBox(StreamInterface* stream, const Box& stbl_box,
 
   // Skip until we find stsz, contains the size (# of bytes) of image data.
   Box stsz_box =
-      GetNextBoxWithTag(stream, stsd_box.next_box_offset(), kStszTag);
+      GetNextBoxWithTag(stream, stsd_box.next_box_offset(), stbl_box, kStszTag);
   if (!stsz_box.IsValid()) {
     return false;
   }
@@ -387,7 +412,7 @@ bool ProcessStblBox(StreamInterface* stream, const Box& stbl_box,
 
   // Skip until we find co64, contains the offset of image data.
   Box co64_box =
-      GetNextBoxWithTag(stream, stsz_box.next_box_offset(), kCo64Tag);
+      GetNextBoxWithTag(stream, stsz_box.next_box_offset(), stbl_box, kCo64Tag);
   if (!co64_box.IsValid()) {
     return false;
   }
@@ -457,8 +482,16 @@ size_t ProcessBox(StreamInterface* stream, const Box& box, ProcessData* data) {
       return 0;
     }
     if (uuid == kUuidPrvw) {
+      if (box.next_box_offset() < box.header_offset() ||
+          uuid.size() + 8 > box.next_box_offset() - box.header_offset()) {
+        return 0;
+      }
       return box.header_offset() + uuid.size() + 8;
     } else if (uuid == kUuidMoov) {
+      if (box.next_box_offset() < box.header_offset() ||
+          uuid.size() > box.next_box_offset() - box.header_offset()) {
+        return 0;
+      }
       return box.header_offset() + uuid.size();
     }  // else skip the box, below.
   } else if (DoProcessChildren(box.tag())) {

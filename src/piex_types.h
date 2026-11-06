@@ -17,6 +17,7 @@
 #ifndef PIEX_PIEX_TYPES_H_
 #define PIEX_PIEX_TYPES_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -88,7 +89,9 @@ struct PreviewImageData {
   std::uint32_t exif_orientation = 1;  // horizontal as default
   ColorSpace color_space = kSrgb;
 
-  // Optional Exif metadata that describes the image.
+  // Optional metadata that describes the image.
+  // This resolution should describe the RAW image and may be zero if unable to
+  // extract.
   std::uint32_t full_width = 0;
   std::uint32_t full_height = 0;
   std::string maker;
@@ -116,8 +119,7 @@ class StreamInterface {
   // 'offset' bytes from the start of the stream.
   // Returns 'kFail' if 'offset' + 'length' exceeds the stream and does not
   // change the contents of 'data'.
-  virtual Error GetData(const size_t offset, const size_t length,
-                        std::uint8_t* data) = 0;
+  virtual Error GetData(size_t offset, size_t length, std::uint8_t* data) = 0;
 };
 
 }  // namespace piex

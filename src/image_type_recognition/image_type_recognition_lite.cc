@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -43,7 +44,7 @@ using binary_parse::RangeCheckedBytePtr;
 // inherited class and do the implementation.
 class TypeChecker {
  public:
-  // Comparing function, whihc is used for sorting.
+  // Comparing function, which is used for sorting.
   static bool Compare(const TypeChecker* a, const TypeChecker* b) {
     assert(a);
     assert(b);
@@ -183,17 +184,17 @@ class ArwTypeChecker : public TypeChecker {
     // Search for (kSignatureFileTypeSection + kSignatureVersions[i]) in first
     // requested bytes
     const string kSignatureSection("\x00\xb0\x01\x00\x04\x00\x00\x00", 8);
-    const int kSignatureVersionsSize = 6;
-    const string kSignatureVersions[kSignatureVersionsSize] = {
+    const std::vector<string> kSignatureVersions = {
         string("\x02\x00", 2),  // ARW 1.0
         string("\x03\x00", 2),  // ARW 2.0
         string("\x03\x01", 2),  // ARW 2.1
         string("\x03\x02", 2),  // ARW 2.2
         string("\x03\x03", 2),  // ARW 2.3
         string("\x04\x00", 2),  // ARW 4.0
+        string("\x05\x00", 2),  // ARW 5.0
     };
     bool matched = false;
-    for (int i = 0; i < kSignatureVersionsSize; ++i) {
+    for (size_t i = 0; i < kSignatureVersions.size(); ++i) {
       matched = matched || IsSignatureFound(
                                limited_source, 0 /* offset */, RequestedSize(),
                                kSignatureSection + kSignatureVersions[i], NULL);
@@ -283,7 +284,6 @@ class DcrTypeChecker : public TypeChecker {
   virtual RawImageTypes Type() const { return kDcrImage; }
 
   virtual size_t RequestedSize() const { return 5000; }
-
   // Check two different cases, only need to fulfill one of the two:
   // 1. signature at the (offset == 16) position of the file;
   // 2. two tags (OriginalFileName and FirmwareVersion) can be found in the
@@ -325,7 +325,6 @@ class DngTypeChecker : public TypeChecker {
   virtual RawImageTypes Type() const { return kDngImage; }
 
   virtual size_t RequestedSize() const { return 1024; }
-
   // Check multiple points:
   // 1. valid endianness at the beginning of the file;
   // 2. at least two dng specific tags in the first requested bytes of the
@@ -371,13 +370,76 @@ class DngTypeChecker : public TypeChecker {
   }
 };
 
+// Hasselblad RAW.
+class Raw3frTypeChecker : public TypeChecker {
+ public:
+  virtual RawImageTypes Type() const { return kRaw3frImage; }
+
+  virtual size_t RequestedSize() const { return 1024; }
+
+  // Check multiple points:
+  // 1. valid endianness at the beginning of the file;
+  // 2. TIFF magic at offset 2;
+  // 3. signature "Hasselblad" in the first requested bytes.
+  virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
+    RangeCheckedBytePtr limited_source = LimitSource(source);
+
+    bool use_big_endian;
+    if (!DetermineEndianness(limited_source, &use_big_endian)) {
+      return false;
+    }
+
+    const unsigned short kTiffMagic = 0x2A;  // NOLINT
+    if (!CheckUInt16Value(limited_source, 2 /* offset */, use_big_endian,
+                          kTiffMagic)) {
+      return false;
+    }
+
+    // Search for kSignatureHasselblad in first requested bytes
+    const string kSignatureHasselblad("Hasselblad");
+    return IsSignatureFound(limited_source, 0 /* offset */, RequestedSize(),
+                            kSignatureHasselblad, NULL);
+  }
+};
+
+// Epson RAW.
+class ErfTypeChecker : public TypeChecker {
+ public:
+  virtual RawImageTypes Type() const { return kErfImage; }
+
+  virtual size_t RequestedSize() const { return 1024; }
+
+  // Check multiple points:
+  // 1. valid endianness at the beginning of the file;
+  // 2. TIFF magic at offset 2;
+  // 3. signature "EPSON" in the first requested bytes.
+  virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
+    RangeCheckedBytePtr limited_source = LimitSource(source);
+
+    bool use_big_endian;
+    if (!DetermineEndianness(limited_source, &use_big_endian)) {
+      return false;
+    }
+
+    const unsigned short kTiffMagic = 0x2A;  // NOLINT
+    if (!CheckUInt16Value(limited_source, 2 /* offset */, use_big_endian,
+                          kTiffMagic)) {
+      return false;
+    }
+
+    // Search for kSignatureEpson in first requested bytes
+    const string kSignatureEpson("EPSON");
+    return IsSignatureFound(limited_source, 0 /* offset */, RequestedSize(),
+                            kSignatureEpson, NULL);
+  }
+};
+
 // Kodak RAW.
 class KdcTypeChecker : public TypeChecker {
  public:
   virtual RawImageTypes Type() const { return kKdcImage; }
 
   virtual size_t RequestedSize() const { return 5000; }
-
   // Check two points:
   // 1. valid endianness at the beginning of the file;
   // 2. two tags (WhiteBalance and SerialNumber) in the first requested bytes.
@@ -413,7 +475,6 @@ class MosTypeChecker : public TypeChecker {
   virtual RawImageTypes Type() const { return kMosImage; }
 
   virtual size_t RequestedSize() const { return 5000; }
-
   // Check two points:
   // 1. valid endianness at the beginning of the file;
   // 2. signature "PKTS    " in the first requested bytes. Note the
@@ -452,10 +513,11 @@ class MrwTypeChecker : public TypeChecker {
   }
 };
 
-// Check if the file contains a NRW signature "NRW   " in the first requested
+// Check if the file contains a `NRW` signature "NRW   " in the first requested
 // bytes. Note the "whitespace". It's important as they are special binary
 // values.
 const size_t kRequestedSizeForNrwSignature = 4000;
+
 bool ContainsNrwSignature(const RangeCheckedBytePtr& source) {
   // Search for kSignatureNrw.
   const string kSignatureNrw("NRW\x20\x20\x20", 6);
@@ -467,6 +529,7 @@ bool ContainsNrwSignature(const RangeCheckedBytePtr& source) {
 // * the general Nikon singature "NIKON" string.
 // * the ReferenceBlackWhite tag.
 const size_t kRequestedSizeForNikonSignatures = 4000;
+
 bool ContainsNikonSignatures(const RangeCheckedBytePtr& source,
                              const bool use_big_endian) {
   const string kSignatureNikon("NIKON");
@@ -567,11 +630,10 @@ class OrfTypeChecker : public TypeChecker {
   virtual RawImageTypes Type() const { return kOrfImage; }
 
   virtual size_t RequestedSize() const { return 3000; }
-
   // Check multiple points:
   // 1. valid endianness at the beginning of the file;
   // 2. tag at the (offset == 2) position of the file;
-  // 3. signature "OLYMP" in the first requested bytes.
+  // 3. signature "OLYMP" or "OM Digital" in the first requested bytes.
   virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
     RangeCheckedBytePtr limited_source = LimitSource(source);
 
@@ -589,10 +651,14 @@ class OrfTypeChecker : public TypeChecker {
       return false;
     }
 
-    // Search for kSignatureOlymp in first requested bytes
+    // Search for kSignatureOlymp or kSignatureOmDigital in first requested
+    // bytes
     const string kSignatureOlymp("OLYMP");
+    const string kSignatureOmDigital("OM Digital");
     return IsSignatureFound(limited_source, 0 /* offset */, RequestedSize(),
-                            kSignatureOlymp, NULL);
+                            kSignatureOlymp, NULL) ||
+           IsSignatureFound(limited_source, 0 /* offset */, RequestedSize(),
+                            kSignatureOmDigital, NULL);
   }
 };
 
@@ -602,7 +668,6 @@ class PefTypeChecker : public TypeChecker {
   virtual RawImageTypes Type() const { return kPefImage; }
 
   virtual size_t RequestedSize() const { return 1280; }
-
   // Check multiple points:
   // 1. valid big endianness at the beginning of the file;
   // 2. magic numbers at the (offset == 2 and offset==4) positions of the file;
@@ -631,6 +696,42 @@ class PefTypeChecker : public TypeChecker {
                             kSignatureAOC, NULL) ||
            IsSignatureFound(limited_source, 0 /* offset */, RequestedSize(),
                             kSignaturePENTAX, NULL);
+  }
+};
+
+// Phase One RAW.
+class PhaseOneTypeChecker : public TypeChecker {
+ public:
+  virtual RawImageTypes Type() const { return kPhaseOneImage; }
+
+  virtual size_t RequestedSize() const { return 16; }
+
+  virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
+    RangeCheckedBytePtr limited_source = LimitSource(source);
+
+    const string kSignature("MMMMRawT", 8);
+    if (IsSignatureMatched(limited_source, 0, kSignature)) {
+      return true;
+    }
+    if (IsSignatureMatched(limited_source, 8, kSignature)) {
+      return true;
+    }
+    return false;
+  }
+};
+
+// Logitech PXN RAW.
+class PxnTypeChecker : public TypeChecker {
+ public:
+  virtual RawImageTypes Type() const { return kPxnImage; }
+
+  virtual size_t RequestedSize() const { return 4; }
+
+  virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
+    RangeCheckedBytePtr limited_source = LimitSource(source);
+
+    const string kSignature("PXN\x00", 4);
+    return IsSignatureMatched(limited_source, 0, kSignature);
   }
 };
 
@@ -687,6 +788,21 @@ class RawContaxNTypeChecker : public TypeChecker {
   }
 };
 
+// Rollei RDC RAW.
+class RdcTypeChecker : public TypeChecker {
+ public:
+  virtual RawImageTypes Type() const { return kRdcImage; }
+
+  virtual size_t RequestedSize() const { return 16; }
+
+  virtual bool IsMyType(const RangeCheckedBytePtr& source) const {
+    RangeCheckedBytePtr limited_source = LimitSource(source);
+
+    const string kSignature("DSC-Image <C> by", 16);
+    return IsSignatureMatched(limited_source, 0, kSignature);
+  }
+};
+
 // Panasonic RAW.
 class Rw2TypeChecker : public TypeChecker {
  public:
@@ -716,7 +832,6 @@ class SrwTypeChecker : public TypeChecker {
   virtual RawImageTypes Type() const { return kSrwImage; }
 
   virtual size_t RequestedSize() const { return 256; }
-
   // Check multiple points:
   // 1. valid big endianness at the beginning of the file;
   // 2. magic numbers at the (offset == 2 and offset==4) positions of the file;
@@ -773,7 +888,7 @@ class TypeCheckerList {
     checkers_.push_back(new Cr2TypeChecker());
     checkers_.push_back(new CrwTypeChecker());
     checkers_.push_back(new DcrTypeChecker());
-    checkers_.push_back(new DngTypeChecker());
+    checkers_.push_back(new ErfTypeChecker());
     checkers_.push_back(new KdcTypeChecker());
     checkers_.push_back(new MosTypeChecker());
     checkers_.push_back(new MrwTypeChecker());
@@ -781,16 +896,26 @@ class TypeCheckerList {
     checkers_.push_back(new NrwTypeChecker());
     checkers_.push_back(new OrfTypeChecker());
     checkers_.push_back(new PefTypeChecker());
+    checkers_.push_back(new PhaseOneTypeChecker());
+    checkers_.push_back(new PxnTypeChecker());
     checkers_.push_back(new QtkTypeChecker());
     checkers_.push_back(new RafTypeChecker());
+    checkers_.push_back(new Raw3frTypeChecker());
     checkers_.push_back(new RawContaxNTypeChecker());
+    checkers_.push_back(new RdcTypeChecker());
     checkers_.push_back(new Rw2TypeChecker());
     checkers_.push_back(new SrwTypeChecker());
     checkers_.push_back(new X3fTypeChecker());
 
+    // DngTypeChecker checks for generic DNG/TIFF tags which can accidentally
+    // match other TIFF-based RAW formats (like Hasselblad .3fr). Placing DNG
+    // last and using std::stable_sort ensures that more specific format
+    // checkers take precedence over the generic DNG checker.
+    checkers_.push_back(new DngTypeChecker());
+
     // Sort the checkers by the ascending RequestedSize() to get better
     // performance when checking type.
-    std::sort(checkers_.begin(), checkers_.end(), TypeChecker::Compare);
+    std::stable_sort(checkers_.begin(), checkers_.end(), TypeChecker::Compare);
   }
 
   ~TypeCheckerList() {
@@ -867,6 +992,7 @@ bool IsRaw(const RawImageTypes type) {
     case kCrwImage:
     case kDcrImage:
     case kDngImage:
+    case kErfImage:
     case kKdcImage:
     case kMosImage:
     case kMrwImage:
@@ -874,9 +1000,13 @@ bool IsRaw(const RawImageTypes type) {
     case kNrwImage:
     case kOrfImage:
     case kPefImage:
+    case kPhaseOneImage:
+    case kPxnImage:
     case kQtkImage:
     case kRafImage:
+    case kRaw3frImage:
     case kRawContaxNImage:
+    case kRdcImage:
     case kRw2Image:
     case kSrwImage:
     case kX3fImage: {
