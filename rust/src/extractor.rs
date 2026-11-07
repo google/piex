@@ -669,12 +669,14 @@ pub fn get_olympus_preview_image<S: StreamInterface + ?Sized>(
         .map_err(|e| PiexError::CorruptData(e.to_string()))?;
 
     if makernote_ifd.has(0x0100) {
-        if let Ok((off, len)) = makernote_ifd.get_offset_and_length(0x0100, TiffType::Undefined) {
-            preview_data.thumbnail.offset = off;
-            preview_data.thumbnail.length = len;
-        }
+        let (off, len) = makernote_ifd
+            .get_offset_and_length(0x0100, TiffType::Undefined)
+            .map_err(|e| PiexError::CorruptData(e.to_string()))?;
+        preview_data.thumbnail.offset = off;
+        preview_data.thumbnail.length = len;
     }
 
+    let mut has_preview = false;
     if makernote_ifd.has(OLYMPUS_TAG_CAMERA_SETTINGS) {
         if let Ok((camera_settings_ptr, _)) =
             makernote_ifd.get_offset_and_length(OLYMPUS_TAG_CAMERA_SETTINGS, TiffType::Ifd)
@@ -692,17 +694,22 @@ pub fn get_olympus_preview_image<S: StreamInterface + ?Sized>(
                     &mut next_offset,
                 ) {
                     if camera_settings_ifd.has(0x0101) && camera_settings_ifd.has(0x0102) {
-                        if let (Ok(p_off), Ok(p_len)) = (
-                            camera_settings_ifd.get_u32(0x0101),
-                            camera_settings_ifd.get_u32(0x0102),
-                        ) {
-                            preview_data.preview.offset = p_off.saturating_add(makernote_offset);
+                        has_preview = true;
+                        if let Ok(p_off) = camera_settings_ifd.get_u32(0x0101) {
+                            preview_data.preview.offset = p_off;
+                        }
+                        preview_data.preview.offset =
+                            preview_data.preview.offset.saturating_add(makernote_offset);
+                        if let Ok(p_len) = camera_settings_ifd.get_u32(0x0102) {
                             preview_data.preview.length = p_len;
                         }
                     }
                 }
             }
         }
+    }
+    if !has_preview {
+        return Err(PiexError::CorruptData("No preview in Olympus camera settings".into()));
     }
 
     if makernote_ifd.has(OLYMPUS_TAG_RAW_PROCESSING) {
