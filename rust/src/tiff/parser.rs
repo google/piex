@@ -559,8 +559,15 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
         max_number_ifds: u16,
     ) -> Result<(), TiffError> {
         if tiff_ifd.has(EXIF_TAG_SUB_IFDS) {
-            if let Ok(offsets) = tiff_ifd.get_u32_vec(EXIF_TAG_SUB_IFDS) {
-                for &sub_offset in offsets.iter().take(max_number_ifds as usize) {
+            if let Ok((offset, length)) = tiff_ifd
+                .get_offset_and_length(EXIF_TAG_SUB_IFDS, TiffType::Long)
+                .or_else(|_| tiff_ifd.get_offset_and_length(EXIF_TAG_SUB_IFDS, TiffType::Ifd))
+            {
+                let count = (length / 4).min(u32::from(max_number_ifds));
+                for j in 0..count {
+                    let entry_offset =
+                        offset.checked_add(j * 4).ok_or(TiffError::CorruptedEntry { offset })?;
+                    let sub_offset = self.read_u32(entry_offset)?;
                     let mut next_offset = 0u32;
                     let sub_dir_offset = self
                         .tiff_offset
@@ -673,6 +680,7 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
             if let Ok(cfa) = dir.get_u32_vec(TIFF_TAG_CFA_PATTERN_DIM) {
                 if cfa.len() == 2 {
                     preview_data.cfa_pattern_dim = [cfa[0], cfa[1]];
+                    preview_data.cfa_pattern_dim_set = true;
                 }
             }
         }
