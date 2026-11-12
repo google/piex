@@ -1358,3 +1358,119 @@ fn test_regression_crash_03_cr3_truncated_trailer_box() {
     // Verified graceful failure / error handling without panicking on truncated trailing boxes
     assert!(res.is_err());
 }
+
+#[test]
+fn test_uuid_container_payload_length_boundaries() {
+    let cmt1 = create_cmt1_payload();
+    let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    let prvw = create_prvw_payload(1280, 720, &jpeg);
+
+    // (preview container?, header length, claimed payload length, accepted?,
+    // payload length of a preceding uuid box with an unknown id, total length
+    // of a skippable 'free' box right after the container id; 0 for none).
+    // With a 'free' box there, the bytes after a too-short container are
+    // well-formed boxes (an 8-byte one in place of the preview container's
+    // padding).
+    for (is_prvw, header_len, payload_len, expect_ok, other_uuid_payload, free_box_len) in [
+        (false, 8u64, 15u64, false, None, 0u32),
+        (false, 8, 16, true, None, 0u32),
+        (false, 8, 17, true, None, 0u32),
+        (true, 8, 23, false, None, 0u32),
+        (true, 8, 24, true, None, 0u32),
+        (true, 8, 25, true, None, 0u32),
+        (false, 16, 15, false, None, 0u32),
+        (false, 16, 16, true, None, 0u32),
+        (true, 16, 23, false, None, 0u32),
+        (true, 16, 24, true, None, 0u32),
+        (false, 8, 16, true, Some(0u32), 0u32),
+        (false, 8, 16, true, Some(15), 0u32),
+        (true, 8, 24, true, Some(23), 0u32),
+        (true, 8, 16, false, None, 8),
+        (true, 16, 16, false, None, 8),
+        (true, 8, 24, true, None, 8),
+    ] {
+        let mut buf = Vec::new();
+        if let Some(n) = other_uuid_payload {
+            buf.extend_from_slice(&(8 + n).to_be_bytes());
+            buf.extend_from_slice(b"uuid");
+            buf.extend(std::iter::repeat_n(0xAAu8, n as usize));
+        }
+        let total_len = header_len + payload_len;
+        if header_len == 16 {
+            buf.extend_from_slice(&1u32.to_be_bytes());
+            buf.extend_from_slice(b"uuid");
+            buf.extend_from_slice(&total_len.to_be_bytes());
+        } else {
+            buf.extend_from_slice(&u32::try_from(total_len).unwrap().to_be_bytes());
+            buf.extend_from_slice(b"uuid");
+        }
+        buf.extend_from_slice(if is_prvw { &UUID_PRVW } else { &UUID_MOOV });
+        if free_box_len > 0 {
+            buf.extend_from_slice(&free_box_len.to_be_bytes());
+            buf.extend_from_slice(b"free");
+            buf.resize(buf.len() + free_box_len as usize - 8, 0);
+        } else if is_prvw {
+            buf.extend_from_slice(&[0u8; 8]);
+        }
+        let mut children = BoxBuilder::new();
+        children.add_box(b"CMT1", &cmt1);
+        let prvw_box_offset = buf.len() + children.buf.len();
+        children.add_box(b"PRVW", &prvw);
+        children.add_box(b"mdat", &[]);
+        buf.extend_from_slice(&children.buf);
+
+        let case = format!(
+            "is_prvw={is_prvw} header={header_len} payload={payload_len} other={other_uuid_payload:?} free={free_box_len}"
+        );
+        let stream = ByteSliceStream::new(&buf);
+        let orientation = extract_cr3_orientation(&stream);
+        let preview = extract_cr3_preview_data(&stream);
+        if expect_ok {
+            assert_eq!(orientation.ok(), Some(6), "{case}");
+            let preview = preview.expect(&case).preview;
+            assert_eq!((preview.width, preview.height), (1280, 720), "{case}");
+            assert_eq!(preview.offset as usize, prvw_box_offset + 8 + 16, "{case}");
+            assert_eq!(preview.length as usize, jpeg.len(), "{case}");
+        } else {
+            assert!(orientation.is_err(), "{case}");
+            assert!(preview.is_err(), "{case}");
+        }
+    }
+}
+
+#[test]
+fn test_craw_size_and_stsd_containment_boundaries() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1920, 1080, &jpeg);
+    // `expected` is the preview size: 3840x2160 from the CRAW entry, 1920x1080 from the
+    // fallback PRVW box when the entry is skipped, or `None` when the file is rejected.
+    let (craw, prvw) = (Some((3840, 2160)), Some((1920, 1080)));
+    for (tag, entry_len, expected) in [
+        (b"CRAW", 8u32, None),
+        (b"CRAW", 87, None),
+        (b"CRAW", 88, craw),
+        (b"CRAW", 89, craw),
+        (b"CRAW", 99, craw),
+        (b"CRAW", 100, craw),
+        (b"CRAW", 101, None),
+        // The size and containment checks apply only to CRAW entries.
+        (b"CTMD", 8, prvw),
+        (b"CTMD", 101, prvw),
+        (b"CTMD", 0x10000, prvw),
+    ] {
+        let mut moov = build_stbl_tree(3, jpeg.len() as u32, 0, tag);
+        let tag_pos = moov.windows(4).position(|w| w == tag).unwrap();
+        moov[tag_pos - 4..tag_pos].copy_from_slice(&entry_len.to_be_bytes());
+
+        let mut builder = BoxBuilder::new();
+        builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+        builder.buf.extend_from_slice(&moov);
+        builder.add_box(b"PRVW", &prvw_payload);
+        builder.add_box(b"mdat", &jpeg);
+
+        let stream = ByteSliceStream::new(&builder.buf);
+        let got =
+            extract_cr3_preview_data(&stream).ok().map(|d| (d.preview.width, d.preview.height));
+        assert_eq!(got, expected, "tag={tag:?} entry_len={entry_len}");
+    }
+}
