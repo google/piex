@@ -739,3 +739,27 @@ fn test_checker_precedence_ordering() {
         "ERF checker (1024) must take precedence over DNG checker (1024) per C++ TypeCheckerList"
     );
 }
+
+#[test]
+fn test_type_check_window_ignores_bytes_past_requested_size() {
+    // The Epson checker inspects the first 1024 bytes and accepts "EPSON"
+    // starting at offsets 0..=1018.
+    for &(file_len, signature_pos, expected) in &[
+        (1040usize, 1018usize, RawImageType::Erf),
+        (1040, 1019, RawImageType::NonRaw),
+        (1040, 1022, RawImageType::NonRaw),
+        (1040, 1024, RawImageType::NonRaw),
+        (1024, 1018, RawImageType::Erf),
+        (1023, 100, RawImageType::NonRaw),
+        (1056, 1018, RawImageType::Erf),
+        (1056, 1019, RawImageType::NonRaw),
+        (1056, 1040, RawImageType::NonRaw),
+    ] {
+        let mut file = vec![0u8; file_len];
+        file[..4].copy_from_slice(b"II*\0");
+        file[signature_pos..signature_pos + 5].copy_from_slice(b"EPSON");
+        let case = format!("file_len={file_len} signature_pos={signature_pos}");
+        assert_eq!(recognize_raw_image_type_lite(&file), expected, "{case}");
+        assert_eq!(is_of_type(&file, RawImageType::Erf), expected == RawImageType::Erf, "{case}");
+    }
+}
