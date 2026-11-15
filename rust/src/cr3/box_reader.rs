@@ -208,14 +208,9 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
             None => return Err(PiexError::InvalidBoxHeader { offset }),
         };
         (length_64, header_off)
-    } else if length_32 == 0 {
-        let total_len = (stream_len as u64).saturating_sub(offset);
-        let header_off = match offset.checked_add(8) {
-            Some(val) => val,
-            None => return Err(PiexError::InvalidBoxHeader { offset }),
-        };
-        (total_len, header_off)
     } else {
+        // C++ GetNextBox treats `length_32 == 0` as a literal 0-byte compact length,
+        // which is then rejected by the `total_length < header_length` check below.
         let header_off = match offset.checked_add(8) {
             Some(val) => val,
             None => return Err(PiexError::InvalidBoxHeader { offset }),
@@ -247,10 +242,12 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
 
 /// Scans for the next child box matching `expected_tag` within `enclosing_box`.
 ///
-/// Bounded scanning begins at `offset` and continues while `offset < enclosing_box.next_box_offset`.
+/// Bounded scanning begins at `offset` and continues while `offset <
+/// enclosing_box.next_box_offset`.
 ///
 /// # Errors
-/// Returns `PiexError::InvalidBoxHeader` if a child box header is corrupt or lacks monotonic progress.
+/// Returns `PiexError::InvalidBoxHeader` if a child box header is corrupt or lacks monotonic
+/// progress.
 pub fn find_next_box_with_tag<R: StreamInterface + ?Sized>(
     stream: &R,
     mut offset: u64,
