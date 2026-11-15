@@ -236,44 +236,31 @@ fn test_read_next_box_extended_header_at_nonzero_offset() {
 }
 
 // ============================================================================
-// 5. Box Extending to EOF (`length_32 == 0`)
+// 5. Zero-Length Box Rejection (`length_32 == 0`)
 // ============================================================================
 
 #[test]
-fn test_read_next_box_length_zero_extends_to_eof() {
+fn test_read_next_box_length_zero_rejected() {
     let mut buf = Vec::new();
-    // length_32 = 0 indicates box extends to the end of the stream
     buf.extend_from_slice(&0u32.to_be_bytes());
     buf.extend_from_slice(b"mdat");
-    buf.extend_from_slice(&[0x12; 32]); // 40 bytes total stream length
+    buf.extend_from_slice(&[0x12; 32]);
 
     let mut stream = ByteSliceStream::new(&buf);
-    let header = read_next_box(&mut stream, 0).unwrap().unwrap();
-
-    assert_eq!(header.box_type, BoxType::MDAT);
-    assert_eq!(header.offset, 0);
-    assert_eq!(header.header_offset, 8);
-    assert_eq!(header.next_box_offset, 40);
-    assert_eq!(header.total_length(), 40);
-    assert_eq!(header.payload_length(), 32);
+    let res = read_next_box(&mut stream, 0);
+    assert!(matches!(res, Err(PiexError::InvalidBoxHeader { offset: 0 })));
 }
 
 #[test]
-fn test_read_next_box_length_zero_at_nonzero_offset() {
+fn test_read_next_box_length_zero_at_nonzero_offset_rejected() {
     let mut buf = vec![0x00u8; 20];
     buf.extend_from_slice(&0u32.to_be_bytes());
     buf.extend_from_slice(b"trak");
-    buf.extend_from_slice(&[0x34; 80]); // Total stream length 108
+    buf.extend_from_slice(&[0x34; 80]);
 
     let mut stream = ByteSliceStream::new(&buf);
-    let header = read_next_box(&mut stream, 20).unwrap().unwrap();
-
-    assert_eq!(header.box_type, BoxType::TRAK);
-    assert_eq!(header.offset, 20);
-    assert_eq!(header.header_offset, 28);
-    assert_eq!(header.next_box_offset, 108);
-    assert_eq!(header.total_length(), 88);
-    assert_eq!(header.payload_length(), 80);
+    let res = read_next_box(&mut stream, 20);
+    assert!(matches!(res, Err(PiexError::InvalidBoxHeader { offset: 20 })));
 }
 
 // ============================================================================
@@ -496,9 +483,7 @@ fn test_find_next_box_with_tag_detects_non_advancing_progress() {
     buf.extend_from_slice(&40u32.to_be_bytes());
     buf.extend_from_slice(b"moov");
 
-    // Corrupted child box with non-advancing box specification
-    // Offset 8: child box has size 0, but total stream is 40 -> total_length becomes 32, but offset doesn't advance if size is invalid
-    // Let's create invalid short length 4
+    // Child box at offset 8 has compact size 4 (< 8-byte header), which is invalid.
     buf.extend_from_slice(&4u32.to_be_bytes());
     buf.extend_from_slice(b"bad_");
     buf.resize(40, 0u8);
