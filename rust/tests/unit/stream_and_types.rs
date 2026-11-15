@@ -825,3 +825,55 @@ fn test_zero_length_reads_at_invalid_offsets() {
     assert!(adapter.get_data(6, &mut empty_buf).is_err());
     assert!(adapter.get_data(usize::MAX, &mut empty_buf).is_err());
 }
+
+#[test]
+fn test_sub_stream_isolates_trailing_outer_bytes() {
+    let mut backing = [0xA5u8; 24];
+    backing[4..8].copy_from_slice(b"FOVb");
+    for (idx, slot) in backing[8..].iter_mut().enumerate() {
+        *slot = 0xB0u8 + (idx as u8);
+    }
+
+    let outer = ByteSliceStream::new(&backing);
+
+    for prior_read_offset in [0usize, 3, 7, 8, 9, 15, 23] {
+        let mut prior_byte = [0u8; 1];
+        outer.get_data(prior_read_offset, &mut prior_byte).unwrap();
+        assert_eq!(prior_byte[0], backing[prior_read_offset]);
+
+        let sub = outer.sub_stream(4, 4).unwrap();
+        assert_eq!(sub.len(), 4);
+
+        let mut header = [0u8; 4];
+        sub.get_data(0, &mut header).unwrap();
+        assert_eq!(&header, b"FOVb");
+
+        for oob_offset in [4usize, 5, 6, 9, 16, usize::MAX] {
+            let mut sentinel = [0x5Au8; 1];
+            assert!(matches!(
+                sub.get_data(oob_offset, &mut sentinel),
+                Err(PiexError::OutOfBounds { total_len: 4, .. })
+            ));
+            assert_eq!(sentinel, [0x5Au8; 1]);
+        }
+
+        let wide_outer = outer.sub_stream(2, 12).unwrap();
+        let nested = wide_outer.sub_stream(2, 4).unwrap();
+        let mut sentinel = [0x5Au8; 2];
+        assert!(matches!(
+            nested.get_data(4, &mut sentinel),
+            Err(PiexError::OutOfBounds { total_len: 4, .. })
+        ));
+        assert_eq!(sentinel, [0x5Au8; 2]);
+
+        let empty_sub = outer.sub_stream(4, 0).unwrap();
+        let mut one_byte = [0x5Au8; 1];
+        for oob_offset in [0usize, 1, 5, usize::MAX] {
+            assert!(matches!(
+                empty_sub.get_data(oob_offset, &mut one_byte),
+                Err(PiexError::OutOfBounds { total_len: 0, .. })
+            ));
+            assert_eq!(one_byte, [0x5Au8; 1]);
+        }
+    }
+}

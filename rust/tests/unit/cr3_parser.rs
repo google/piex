@@ -1,11 +1,11 @@
 use piex::cr3::{
-    extract_cr3_orientation, extract_cr3_preview_data, JpegBoxOffsets, PRVW_JPEG_OFFSETS,
-    THMB_JPEG_OFFSETS, UUID_MOOV, UUID_PRVW,
+    extract_cr3_orientation, extract_cr3_preview_data, extract_cr3_preview_data_into,
+    JpegBoxOffsets, PRVW_JPEG_OFFSETS, THMB_JPEG_OFFSETS, UUID_MOOV, UUID_PRVW,
 };
 use piex::stream::{ByteSliceStream, Endian};
 use piex::tiff::directory::TiffType;
 use piex::tiff::tags::tiff::*;
-use piex::types::{ImageFormat, PiexError, Rational};
+use piex::types::{ImageFormat, PiexError, PreviewImageData, Rational};
 
 // ============================================================================
 // Helper Utilities
@@ -1357,4 +1357,750 @@ fn test_regression_crash_03_cr3_truncated_trailer_box() {
     let res = extract_cr3_preview_data(&stream);
     // Verified graceful failure / error handling without panicking on truncated trailing boxes
     assert!(res.is_err());
+}
+
+// ============================================================================
+// 7. Declared Box-Size Enforcement on Canon UUID Containers
+// ============================================================================
+
+fn append_uuid_box_with_declared_payload(
+    buf: &mut Vec<u8>,
+    extended_64: bool,
+    declared_payload_len: usize,
+    physical_payload: &[u8],
+) {
+    if extended_64 {
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(b"uuid");
+        let total = 16u64 + declared_payload_len as u64;
+        buf.extend_from_slice(&total.to_be_bytes());
+    } else {
+        let total = u32::try_from(8 + declared_payload_len).expect("compact box fits u32");
+        buf.extend_from_slice(&total.to_be_bytes());
+        buf.extend_from_slice(b"uuid");
+    }
+    buf.extend_from_slice(physical_payload);
+}
+
+#[test]
+fn test_uuid_prvw_rejects_short_declared_payload_even_with_valid_trailing_boxes() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+
+    let mut prvw_box = BoxBuilder::new();
+    prvw_box.add_box(b"PRVW", &prvw_payload);
+
+    let mut mdat_box = BoxBuilder::new();
+    mdat_box.add_box(b"mdat", &jpeg);
+
+    let mut full_tail = Vec::new();
+    full_tail.extend_from_slice(&UUID_PRVW);
+    full_tail.extend_from_slice(&[0u8; 8]);
+    full_tail.extend_from_slice(&prvw_box.buf);
+    full_tail.extend_from_slice(&mdat_box.buf);
+
+    for extended_64 in [false, true] {
+        for declared_payload_len in 0..24 {
+            let mut builder = BoxBuilder::new();
+            builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+            let uuid_offset = builder.buf.len() as u64;
+            append_uuid_box_with_declared_payload(
+                &mut builder.buf,
+                extended_64,
+                declared_payload_len,
+                &full_tail,
+            );
+
+            let stream = ByteSliceStream::new(&builder.buf);
+            let res = extract_cr3_preview_data(&stream);
+            assert_eq!(
+                res,
+                Err(PiexError::InvalidBoxHeader { offset: uuid_offset }),
+                "UUID_PRVW with extended_64={extended_64} declared_payload_len={declared_payload_len} must fail",
+            );
+        }
+
+        for declared_payload_len in [24, 24 + prvw_box.buf.len()] {
+            let mut builder = BoxBuilder::new();
+            builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+            append_uuid_box_with_declared_payload(
+                &mut builder.buf,
+                extended_64,
+                declared_payload_len,
+                &full_tail,
+            );
+
+            let stream = ByteSliceStream::new(&builder.buf);
+            let data = extract_cr3_preview_data(&stream).unwrap_or_else(|err| {
+                panic!(
+                    "UUID_PRVW with extended_64={extended_64} declared_payload_len={declared_payload_len} failed: {err:?}"
+                )
+            });
+            assert_eq!(data.preview.width, 1280);
+            assert_eq!(data.preview.height, 720);
+            assert_eq!(data.preview.format, ImageFormat::JpegCompressed);
+        }
+    }
+}
+
+#[test]
+fn test_uuid_moov_rejects_short_declared_payload_for_preview_and_orientation() {
+    let jpeg = create_valid_jpeg_payload();
+    let cmt1_payload = create_cmt1_payload();
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+
+    let mut children = BoxBuilder::new();
+    children.add_box(b"CMT1", &cmt1_payload);
+    children.add_box(b"PRVW", &prvw_payload);
+
+    let mut mdat_box = BoxBuilder::new();
+    mdat_box.add_box(b"mdat", &jpeg);
+
+    let mut full_tail = Vec::new();
+    full_tail.extend_from_slice(&UUID_MOOV);
+    full_tail.extend_from_slice(&children.buf);
+    full_tail.extend_from_slice(&mdat_box.buf);
+
+    for extended_64 in [false, true] {
+        for declared_payload_len in 0..16 {
+            let mut builder = BoxBuilder::new();
+            builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+            let uuid_offset = builder.buf.len() as u64;
+            append_uuid_box_with_declared_payload(
+                &mut builder.buf,
+                extended_64,
+                declared_payload_len,
+                &full_tail,
+            );
+
+            let stream = ByteSliceStream::new(&builder.buf);
+            assert_eq!(
+                extract_cr3_preview_data(&stream),
+                Err(PiexError::InvalidBoxHeader { offset: uuid_offset }),
+                "UUID_MOOV preview with extended_64={extended_64} declared_payload_len={declared_payload_len}",
+            );
+            assert_eq!(
+                extract_cr3_orientation(&stream),
+                Err(PiexError::InvalidBoxHeader { offset: uuid_offset }),
+                "UUID_MOOV orientation with extended_64={extended_64} declared_payload_len={declared_payload_len}",
+            );
+        }
+
+        for declared_payload_len in [16, 16 + children.buf.len()] {
+            let mut builder = BoxBuilder::new();
+            builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+            append_uuid_box_with_declared_payload(
+                &mut builder.buf,
+                extended_64,
+                declared_payload_len,
+                &full_tail,
+            );
+
+            let stream = ByteSliceStream::new(&builder.buf);
+            let data = extract_cr3_preview_data(&stream).unwrap_or_else(|err| {
+                panic!(
+                    "UUID_MOOV preview with extended_64={extended_64} declared_payload_len={declared_payload_len} failed: {err:?}"
+                )
+            });
+            assert_eq!(data.preview.width, 1280);
+            assert_eq!(data.preview.height, 720);
+            assert_eq!(data.exif_orientation, 6);
+            assert_eq!(extract_cr3_orientation(&stream), Ok(6));
+        }
+    }
+}
+
+#[test]
+fn test_extract_cr3_preview_data_into_preserves_prior_boxes_on_short_uuid_error() {
+    let jpeg = create_valid_jpeg_payload();
+    let cmt1_payload = create_cmt1_payload();
+    let thmb_payload = create_thmb_payload(160, 120, &jpeg);
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+
+    let mut prvw_and_mdat = BoxBuilder::new();
+    prvw_and_mdat.add_box(b"PRVW", &prvw_payload);
+    prvw_and_mdat.add_box(b"mdat", &jpeg);
+
+    let mut prvw_tail = Vec::new();
+    prvw_tail.extend_from_slice(&UUID_PRVW);
+    prvw_tail.extend_from_slice(&[0u8; 8]);
+    prvw_tail.extend_from_slice(&prvw_and_mdat.buf);
+
+    let mut builder = BoxBuilder::new();
+    builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+    builder.add_box(b"CMT1", &cmt1_payload);
+    builder.add_box(b"THMB", &thmb_payload);
+    let short_uuid_offset = builder.buf.len() as u64;
+    append_uuid_box_with_declared_payload(&mut builder.buf, false, 23, &prvw_tail);
+
+    let stream = ByteSliceStream::new(&builder.buf);
+    let mut out =
+        PreviewImageData { iso: 3200, date_time: b"keep\0".to_vec(), ..Default::default() };
+
+    let res = extract_cr3_preview_data_into(&stream, &mut out);
+    assert_eq!(res, Err(PiexError::InvalidBoxHeader { offset: short_uuid_offset }));
+
+    assert_eq!(out.maker, b"Canon\0");
+    assert_eq!(out.model, b"EOS R5\0");
+    assert_eq!(out.exif_orientation, 6);
+    assert_eq!(out.full_width, 8192);
+    assert_eq!(out.full_height, 5464);
+    assert_eq!(out.thumbnail.width, 160);
+    assert_eq!(out.thumbnail.height, 120);
+    assert_eq!(out.iso, 3200);
+    assert_eq!(out.date_time, b"keep\0");
+    assert_eq!(out.preview.length, 0);
+    assert_eq!(out.preview.width, 0);
+}
+
+#[test]
+fn test_short_uuid_moov_preserves_prior_box_writes_across_preview_and_orientation() {
+    let jpeg = create_valid_jpeg_payload();
+    let cmt1_payload = create_cmt1_payload();
+    let cmt2_payload = create_cmt2_payload();
+    let thmb_payload = create_thmb_payload(160, 120, &jpeg);
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+
+    // Subcase A: CMT2 + THMB precede short UUID_MOOV (declared payload = 15), with CMT1 + PRVW +
+    // mdat trailing. Both preview and orientation fail at UUID_MOOV; prior CMT2 + THMB writes and
+    // untouched CMT1 caller fields remain intact.
+    let mut post_moov_a = BoxBuilder::new();
+    post_moov_a.add_box(b"CMT1", &cmt1_payload);
+    post_moov_a.add_box(b"PRVW", &prvw_payload);
+    post_moov_a.add_box(b"mdat", &jpeg);
+    let mut tail_a = Vec::new();
+    tail_a.extend_from_slice(&UUID_MOOV);
+    tail_a.extend_from_slice(&post_moov_a.buf);
+
+    for extended_64 in [false, true] {
+        let mut builder = BoxBuilder::new();
+        builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+        builder.add_box(b"CMT2", &cmt2_payload);
+        builder.add_box(b"THMB", &thmb_payload);
+        let uuid_offset = builder.buf.len() as u64;
+        append_uuid_box_with_declared_payload(&mut builder.buf, extended_64, 15, &tail_a);
+
+        let stream = ByteSliceStream::new(&builder.buf);
+        let mut out = PreviewImageData {
+            maker: b"keep_make\0".to_vec(),
+            model: b"keep_model\0".to_vec(),
+            exif_orientation: 8,
+            full_width: 777,
+            full_height: 888,
+            ..Default::default()
+        };
+        assert_eq!(
+            extract_cr3_preview_data_into(&stream, &mut out),
+            Err(PiexError::InvalidBoxHeader { offset: uuid_offset }),
+        );
+        assert_eq!(out.iso, 400);
+        assert_eq!(out.date_time, b"2024:01:15 10:20:30\0");
+        assert_eq!(out.exposure_time, Rational::new(1, 500));
+        assert_eq!(out.fnumber, Rational::new(40, 10));
+        assert_eq!(out.focal_length, Rational::new(85, 1));
+        assert_eq!(out.thumbnail.width, 160);
+        assert_eq!(out.thumbnail.height, 120);
+        assert_eq!(out.maker, b"keep_make\0");
+        assert_eq!(out.model, b"keep_model\0");
+        assert_eq!(out.exif_orientation, 8);
+        assert_eq!(out.full_width, 777);
+        assert_eq!(out.full_height, 888);
+        assert_eq!(out.preview.length, 0);
+        assert_eq!(
+            extract_cr3_orientation(&stream),
+            Err(PiexError::InvalidBoxHeader { offset: uuid_offset }),
+        );
+    }
+
+    // Subcase B: CMT1 + THMB precede short UUID_MOOV (declared payload = 15), with CMT2 + PRVW +
+    // mdat trailing. Preview fails preserving CMT1 + THMB and caller CMT2 sentinels, whereas
+    // orientation stops at CMT1 and returns Ok(6) before reaching UUID_MOOV.
+    let mut post_moov_b = BoxBuilder::new();
+    post_moov_b.add_box(b"CMT2", &cmt2_payload);
+    post_moov_b.add_box(b"PRVW", &prvw_payload);
+    post_moov_b.add_box(b"mdat", &jpeg);
+    let mut tail_b = Vec::new();
+    tail_b.extend_from_slice(&UUID_MOOV);
+    tail_b.extend_from_slice(&post_moov_b.buf);
+
+    for extended_64 in [false, true] {
+        let mut builder = BoxBuilder::new();
+        builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+        builder.add_box(b"CMT1", &cmt1_payload);
+        builder.add_box(b"THMB", &thmb_payload);
+        let uuid_offset = builder.buf.len() as u64;
+        append_uuid_box_with_declared_payload(&mut builder.buf, extended_64, 15, &tail_b);
+
+        let stream = ByteSliceStream::new(&builder.buf);
+        let mut out =
+            PreviewImageData { iso: 3200, date_time: b"keep\0".to_vec(), ..Default::default() };
+        assert_eq!(
+            extract_cr3_preview_data_into(&stream, &mut out),
+            Err(PiexError::InvalidBoxHeader { offset: uuid_offset }),
+        );
+        assert_eq!(out.maker, b"Canon\0");
+        assert_eq!(out.model, b"EOS R5\0");
+        assert_eq!(out.exif_orientation, 6);
+        assert_eq!(out.full_width, 8192);
+        assert_eq!(out.full_height, 5464);
+        assert_eq!(out.thumbnail.width, 160);
+        assert_eq!(out.iso, 3200);
+        assert_eq!(out.date_time, b"keep\0");
+        assert_eq!(out.preview.length, 0);
+        assert_eq!(extract_cr3_orientation(&stream), Ok(6));
+    }
+}
+
+#[test]
+fn test_unknown_uuid_short_declared_payload_skips_to_next_box_offset() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+
+    let mut builder = BoxBuilder::new();
+    builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+    append_uuid_box_with_declared_payload(&mut builder.buf, false, 8, &[0xAAu8; 8]);
+    let expected_prvw_jpeg_offset = u32::try_from(builder.buf.len() + 24).expect("fits u32");
+    builder.add_box(b"PRVW", &prvw_payload);
+    builder.add_box(b"mdat", &jpeg);
+
+    let stream = ByteSliceStream::new(&builder.buf);
+    let data =
+        extract_cr3_preview_data(&stream).expect("short unknown UUID with trailing box skips");
+    assert_eq!(data.preview.width, 1280);
+    assert_eq!(data.preview.height, 720);
+    assert_eq!(data.preview.offset, expected_prvw_jpeg_offset);
+}
+
+// ============================================================================
+// 8. CRAW Sample Entry Minimum Size & STSD Containment Validation
+// ============================================================================
+
+struct CustomStsdTrackSpec {
+    tag: [u8; 4],
+    stsd_extended_64: bool,
+    entry_extended_64: bool,
+    declared_entry_len: u64,
+    physical_entry_len: usize,
+    width: u16,
+    height: u16,
+    content_type: u16,
+    sample_size: u32,
+    chunk_offset: u32,
+}
+
+/// Builds a `trak -> mdia -> minf -> stbl` subtree whose `stsd` has total byte capacity
+/// aligned cleanly to `physical_entry_len`, while writing `declared_entry_len` into the
+/// child sample entry header (`CRAW` or non-`CRAW`) together with returns of the absolute
+/// stream offset of that child sample entry relative to the start of the returned `trak` box.
+fn build_trak_with_custom_stsd_entry(spec: &CustomStsdTrackSpec) -> (Vec<u8>, usize) {
+    let header_len = if spec.entry_extended_64 { 16 } else { 8 };
+    assert!(spec.physical_entry_len >= header_len);
+    let mut entry = vec![0u8; spec.physical_entry_len];
+    if spec.entry_extended_64 {
+        entry[0..4].copy_from_slice(&1u32.to_be_bytes());
+        entry[4..8].copy_from_slice(&spec.tag);
+        entry[8..16].copy_from_slice(&spec.declared_entry_len.to_be_bytes());
+    } else {
+        let len32 = u32::try_from(spec.declared_entry_len).expect("compact box length fits u32");
+        entry[0..4].copy_from_slice(&len32.to_be_bytes());
+        entry[4..8].copy_from_slice(&spec.tag);
+    }
+    if entry.len() >= 36 {
+        entry[32..34].copy_from_slice(&spec.width.to_be_bytes());
+        entry[34..36].copy_from_slice(&spec.height.to_be_bytes());
+    }
+    if entry.len() >= 88 {
+        entry[86..88].copy_from_slice(&spec.content_type.to_be_bytes());
+    }
+
+    let mut stsd = Vec::new();
+    let stsd_entry_rel_off = if spec.stsd_extended_64 {
+        let total = (16 + 8 + entry.len()) as u64;
+        stsd.extend_from_slice(&1u32.to_be_bytes());
+        stsd.extend_from_slice(b"stsd");
+        stsd.extend_from_slice(&total.to_be_bytes());
+        16 + 8
+    } else {
+        let total = u32::try_from(8 + 8 + entry.len()).expect("stsd fits u32");
+        stsd.extend_from_slice(&total.to_be_bytes());
+        stsd.extend_from_slice(b"stsd");
+        8 + 8
+    };
+    stsd.extend_from_slice(&[0u8; 8]); // version/flags + entry_count
+    stsd.extend_from_slice(&entry);
+
+    let mut stsz_payload = vec![0u8; 12];
+    stsz_payload[4..8].copy_from_slice(&spec.sample_size.to_be_bytes());
+    let mut stsz = BoxBuilder::new();
+    stsz.add_box(b"stsz", &stsz_payload);
+
+    let mut co64_payload = vec![0u8; 12];
+    co64_payload[4..8].copy_from_slice(&1u32.to_be_bytes());
+    co64_payload[8..12].copy_from_slice(&spec.chunk_offset.to_be_bytes());
+    let mut co64 = BoxBuilder::new();
+    co64.add_box(b"co64", &co64_payload);
+
+    let mut stbl_payload = Vec::new();
+    stbl_payload.extend_from_slice(&stsd);
+    stbl_payload.extend_from_slice(&stsz.buf);
+    stbl_payload.extend_from_slice(&co64.buf);
+
+    let mut stbl = BoxBuilder::new();
+    stbl.add_box(b"stbl", &stbl_payload);
+    let mut minf = BoxBuilder::new();
+    minf.add_box(b"minf", &stbl.buf);
+    let mut mdia = BoxBuilder::new();
+    mdia.add_box(b"mdia", &minf.buf);
+    let mut trak = BoxBuilder::new();
+    trak.add_box(b"trak", &mdia.buf);
+
+    // 4 enclosing compact headers (`trak`, `mdia`, `minf`, `stbl`) precede `stsd`.
+    let entry_off_in_trak = 4 * 8 + stsd_entry_rel_off;
+    (trak.buf, entry_off_in_trak)
+}
+
+fn build_cr3_with_moov_and_cmt1_order(
+    moov_payload: &[u8],
+    moov_before_cmt1: bool,
+    prvw_payload: &[u8],
+    mdat_payload: &[u8],
+) -> (Vec<u8>, usize) {
+    let cmt1 = create_cmt1_payload();
+    let mut builder = BoxBuilder::new();
+    builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+    if !moov_before_cmt1 {
+        builder.add_box(b"CMT1", &cmt1);
+    }
+    let moov_payload_start = builder.buf.len() + 8;
+    builder.add_box(b"moov", moov_payload);
+    if moov_before_cmt1 {
+        builder.add_box(b"CMT1", &cmt1);
+    }
+    builder.add_box(b"PRVW", prvw_payload);
+    builder.add_box(b"mdat", mdat_payload);
+    (builder.buf, moov_payload_start)
+}
+
+#[test]
+fn test_craw_rejects_declared_box_shorter_than_min_metadata_span() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+    let sample_len = jpeg.len() as u32;
+
+    for entry_extended_64 in [false, true] {
+        let min_header: u64 = if entry_extended_64 { 16 } else { 8 };
+        for content_type in [3u16, 4u16, 0u16] {
+            // Declared lengths in `min_header..88` are structurally valid ISOBMFF box headers,
+            // enclosed inside the 144-byte physical CRAW buffer in `stsd`, yet too small to cover
+            // width (+32..34), height (+34..36), and content_type (+86..88).
+            for bad_len in [min_header, min_header + 1, 32, 33, 34, 35, 36, 85, 86, 87] {
+                let (trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+                    tag: *b"CRAW",
+                    stsd_extended_64: false,
+                    entry_extended_64,
+                    declared_entry_len: bad_len,
+                    physical_entry_len: 144,
+                    width: 3840,
+                    height: 2160,
+                    content_type,
+                    sample_size: sample_len,
+                    chunk_offset: 0,
+                });
+                let (cr3, _) =
+                    build_cr3_with_moov_and_cmt1_order(&trak, true, &prvw_payload, &jpeg);
+                let stream = ByteSliceStream::new(&cr3);
+                assert!(
+                    matches!(extract_cr3_preview_data(&stream), Err(PiexError::CorruptData(_))),
+                    "CRAW ext64={entry_extended_64} ct={content_type} bad_len={bad_len} preview must fail",
+                );
+                assert!(
+                    matches!(extract_cr3_orientation(&stream), Err(PiexError::CorruptData(_))),
+                    "CRAW ext64={entry_extended_64} ct={content_type} bad_len={bad_len} orientation must fail",
+                );
+            }
+
+            // Boundary-valid lengths `[88, 89, 112, 144]` all cover `[0, 88)` within `stsd`.
+            for ok_len in [88u64, 89, 112, 144] {
+                let (trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+                    tag: *b"CRAW",
+                    stsd_extended_64: false,
+                    entry_extended_64,
+                    declared_entry_len: ok_len,
+                    physical_entry_len: 144,
+                    width: 3840,
+                    height: 2160,
+                    content_type,
+                    sample_size: sample_len,
+                    chunk_offset: 0,
+                });
+                let (cr3, _) =
+                    build_cr3_with_moov_and_cmt1_order(&trak, true, &prvw_payload, &jpeg);
+                let stream = ByteSliceStream::new(&cr3);
+                let data = extract_cr3_preview_data(&stream).unwrap_or_else(|err| {
+                    panic!(
+                        "CRAW ext64={entry_extended_64} ct={content_type} ok_len={ok_len} failed: {err:?}"
+                    )
+                });
+                match content_type {
+                    3 => {
+                        assert_eq!(data.preview.width, 3840);
+                        assert_eq!(data.preview.height, 2160);
+                        assert_eq!(data.preview.format, ImageFormat::JpegCompressed);
+                    }
+                    4 => {
+                        assert_eq!(data.preview.width, 3840);
+                        assert_eq!(data.preview.height, 2160);
+                        assert_eq!(data.preview.format, ImageFormat::HevcCompressed);
+                    }
+                    _ => {
+                        assert_eq!(data.preview.width, 1280);
+                        assert_eq!(data.preview.height, 720);
+                        assert_eq!(data.preview.format, ImageFormat::JpegCompressed);
+                    }
+                }
+                assert_eq!(extract_cr3_orientation(&stream), Ok(6));
+            }
+        }
+    }
+
+    // 64-bit extended CRAW length wrapping `u64` (`craw_offset + length >= 2^64`) is rejected
+    // cleanly at box-header decode without overflow or underflow.
+    let (probe_trak, entry_in_trak) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+        tag: *b"CRAW",
+        stsd_extended_64: false,
+        entry_extended_64: true,
+        declared_entry_len: 88,
+        physical_entry_len: 144,
+        width: 3840,
+        height: 2160,
+        content_type: 3,
+        sample_size: sample_len,
+        chunk_offset: 0,
+    });
+    let (_, moov_payload_start) =
+        build_cr3_with_moov_and_cmt1_order(&probe_trak, true, &prvw_payload, &jpeg);
+    let craw_offset = (moov_payload_start + entry_in_trak) as u64;
+    for wrap_len in [u64::MAX - craw_offset + 1, u64::MAX - 8, u64::MAX] {
+        let (trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+            tag: *b"CRAW",
+            stsd_extended_64: false,
+            entry_extended_64: true,
+            declared_entry_len: wrap_len,
+            physical_entry_len: 144,
+            width: 3840,
+            height: 2160,
+            content_type: 3,
+            sample_size: sample_len,
+            chunk_offset: 0,
+        });
+        let (cr3, _) = build_cr3_with_moov_and_cmt1_order(&trak, true, &prvw_payload, &jpeg);
+        let stream = ByteSliceStream::new(&cr3);
+        assert_eq!(
+            extract_cr3_preview_data(&stream),
+            Err(PiexError::InvalidBoxHeader { offset: craw_offset }),
+        );
+        assert_eq!(
+            extract_cr3_orientation(&stream),
+            Err(PiexError::InvalidBoxHeader { offset: craw_offset }),
+        );
+    }
+}
+
+#[test]
+fn test_craw_rejects_declared_box_exceeding_enclosing_stsd() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+    let sample_len = jpeg.len() as u32;
+    let stsd_entry_cap: usize = 112;
+
+    for stsd_extended_64 in [false, true] {
+        for entry_extended_64 in [false, true] {
+            // Contained boundary lattice: `88`, `stsd_cap - 1 = 111`, and exact `stsd_cap = 112`.
+            for ok_len in [88u64, 111, 112] {
+                let (trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+                    tag: *b"CRAW",
+                    stsd_extended_64,
+                    entry_extended_64,
+                    declared_entry_len: ok_len,
+                    physical_entry_len: stsd_entry_cap,
+                    width: 3840,
+                    height: 2160,
+                    content_type: 3,
+                    sample_size: sample_len,
+                    chunk_offset: 0,
+                });
+                let (cr3, _) =
+                    build_cr3_with_moov_and_cmt1_order(&trak, true, &prvw_payload, &jpeg);
+                let stream = ByteSliceStream::new(&cr3);
+                let data = extract_cr3_preview_data(&stream).unwrap_or_else(|err| {
+                    panic!(
+                        "contained CRAW stsd_ext={stsd_extended_64} craw_ext={entry_extended_64} ok_len={ok_len}: {err:?}"
+                    )
+                });
+                assert_eq!(data.preview.width, 3840);
+                assert_eq!(data.preview.height, 2160);
+                assert_eq!(extract_cr3_orientation(&stream), Ok(6));
+            }
+
+            // Overrun lattice (`craw_len >= 88` so min-size check passes, isolated purely on
+            // `craw_box.next_box_offset > stsd_box.next_box_offset`).
+            let mut bad_lengths: Vec<u64> = vec![113, 114, 140, 0x1_0000, u64::from(u32::MAX)];
+            if entry_extended_64 {
+                let (sample_trak, entry_in_trak) =
+                    build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+                        tag: *b"CRAW",
+                        stsd_extended_64,
+                        entry_extended_64: true,
+                        declared_entry_len: 112,
+                        physical_entry_len: stsd_entry_cap,
+                        width: 3840,
+                        height: 2160,
+                        content_type: 3,
+                        sample_size: sample_len,
+                        chunk_offset: 0,
+                    });
+                let (_, moov_payload_start) =
+                    build_cr3_with_moov_and_cmt1_order(&sample_trak, true, &prvw_payload, &jpeg);
+                let craw_offset = (moov_payload_start + entry_in_trak) as u64;
+                bad_lengths.push((1u64 << 32) | 96);
+                bad_lengths.push((1u64 << 48) | 96);
+                bad_lengths.push(u64::MAX - craw_offset);
+            } else {
+                // Compact `length_32 == 0` ("extends to EOF") sets `next_box_offset =
+                // stream.len()`, which strictly exceeds `stsd_box.next_box_offset` whenever boxes
+                // follow `stsd`.
+                bad_lengths.push(0);
+            }
+
+            for bad_len in bad_lengths {
+                let (trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+                    tag: *b"CRAW",
+                    stsd_extended_64,
+                    entry_extended_64,
+                    declared_entry_len: bad_len,
+                    physical_entry_len: stsd_entry_cap,
+                    width: 3840,
+                    height: 2160,
+                    content_type: 3,
+                    sample_size: sample_len,
+                    chunk_offset: 0,
+                });
+                let (cr3, _) =
+                    build_cr3_with_moov_and_cmt1_order(&trak, true, &prvw_payload, &jpeg);
+                let stream = ByteSliceStream::new(&cr3);
+                assert!(
+                    matches!(extract_cr3_preview_data(&stream), Err(PiexError::CorruptData(_))),
+                    "overrun CRAW stsd_ext={stsd_extended_64} craw_ext={entry_extended_64} bad_len={bad_len:#x} preview must fail",
+                );
+                assert!(
+                    matches!(extract_cr3_orientation(&stream), Err(PiexError::CorruptData(_))),
+                    "overrun CRAW stsd_ext={stsd_extended_64} craw_ext={entry_extended_64} bad_len={bad_len:#x} orientation must fail",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_non_craw_stsd_entries_remain_exempt_from_craw_size_and_stsd_bounds() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1280, 720, &jpeg);
+    let sample_len = jpeg.len() as u32;
+
+    let (valid_craw_trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+        tag: *b"CRAW",
+        stsd_extended_64: false,
+        entry_extended_64: false,
+        declared_entry_len: 88,
+        physical_entry_len: 88,
+        width: 3840,
+        height: 2160,
+        content_type: 3,
+        sample_size: sample_len,
+        chunk_offset: 0,
+    });
+
+    // Real Canon CR3 files carry 76-byte `CTMD` timed-metadata sample entries (`< 88`); non-CRAW
+    // tags also return early before `CRAW` `stsd` containment checks.
+    for ctmd_declared_len in [8u64, 76, 87, 0x1_0000] {
+        let (ctmd_trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+            tag: *b"CTMD",
+            stsd_extended_64: false,
+            entry_extended_64: false,
+            declared_entry_len: ctmd_declared_len,
+            physical_entry_len: 76,
+            width: 0,
+            height: 0,
+            content_type: 0,
+            sample_size: sample_len,
+            chunk_offset: 0,
+        });
+        let mut moov_payload = Vec::new();
+        moov_payload.extend_from_slice(&ctmd_trak);
+        moov_payload.extend_from_slice(&valid_craw_trak);
+
+        let (cr3, _) =
+            build_cr3_with_moov_and_cmt1_order(&moov_payload, true, &prvw_payload, &jpeg);
+        let stream = ByteSliceStream::new(&cr3);
+        let data = extract_cr3_preview_data(&stream)
+            .unwrap_or_else(|err| panic!("CTMD len={ctmd_declared_len} must be skipped: {err:?}"));
+        assert_eq!(data.preview.width, 3840);
+        assert_eq!(data.preview.height, 2160);
+        assert_eq!(extract_cr3_orientation(&stream), Ok(6));
+    }
+}
+
+#[test]
+fn test_extract_cr3_preview_data_into_preserves_prior_metadata_on_invalid_craw() {
+    let jpeg = create_valid_jpeg_payload();
+    let cmt1 = create_cmt1_payload();
+    let thmb = create_thmb_payload(160, 120, &jpeg);
+    let prvw = create_prvw_payload(1280, 720, &jpeg);
+    let sample_len = jpeg.len() as u32;
+
+    // Test both failure modes (short 87-byte CRAW and `stsd`-exceeding 113-byte CRAW inside a
+    // 112-byte `stsd` slot) after `CMT1` and `THMB` have already mutated `out`.
+    for bad_craw_len in [87u64, 113] {
+        let (bad_trak, _) = build_trak_with_custom_stsd_entry(&CustomStsdTrackSpec {
+            tag: *b"CRAW",
+            stsd_extended_64: false,
+            entry_extended_64: false,
+            declared_entry_len: bad_craw_len,
+            physical_entry_len: 112,
+            width: 3840,
+            height: 2160,
+            content_type: 3,
+            sample_size: sample_len,
+            chunk_offset: 0,
+        });
+
+        let mut builder = BoxBuilder::new();
+        builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+        builder.add_box(b"CMT1", &cmt1);
+        builder.add_box(b"THMB", &thmb);
+        builder.add_box(b"moov", &bad_trak);
+        builder.add_box(b"PRVW", &prvw);
+        builder.add_box(b"mdat", &jpeg);
+
+        let stream = ByteSliceStream::new(&builder.buf);
+        let mut out =
+            PreviewImageData { iso: 6400, date_time: b"sentinel\0".to_vec(), ..Default::default() };
+        assert!(matches!(
+            extract_cr3_preview_data_into(&stream, &mut out),
+            Err(PiexError::CorruptData(_))
+        ));
+        assert_eq!(out.maker, b"Canon\0");
+        assert_eq!(out.model, b"EOS R5\0");
+        assert_eq!(out.exif_orientation, 6);
+        assert_eq!(out.full_width, 8192);
+        assert_eq!(out.full_height, 5464);
+        assert_eq!(out.thumbnail.width, 160);
+        assert_eq!(out.thumbnail.height, 120);
+        assert_eq!(out.iso, 6400);
+        assert_eq!(out.date_time, b"sentinel\0");
+        assert_eq!(out.preview.length, 0);
+        assert_eq!(out.preview.width, 0);
+        // `CMT1` precedes `moov`, so standalone orientation succeeds before reaching `bad_trak`.
+        assert_eq!(extract_cr3_orientation(&stream), Ok(6));
+    }
 }
