@@ -1358,3 +1358,150 @@ fn test_regression_crash_03_cr3_truncated_trailer_box() {
     // Verified graceful failure / error handling without panicking on truncated trailing boxes
     assert!(res.is_err());
 }
+
+#[test]
+fn test_uuid_moov_undersized_box_rejected() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1920, 1080, &jpeg);
+
+    // Keep trailing bytes intact so the 16-byte UUID read succeeds and only
+    // container bounds validation rejects declared sizes < 24.
+    for declared_size in [8u32, 16u32, 23u32] {
+        let mut inner = BoxBuilder::new();
+        inner.add_box(b"PRVW", &prvw_payload);
+
+        let mut uuid_moov_payload = Vec::new();
+        uuid_moov_payload.extend_from_slice(&UUID_MOOV);
+        uuid_moov_payload.extend_from_slice(&inner.buf);
+
+        let mut builder = BoxBuilder::new();
+        builder.add_box(b"uuid", &uuid_moov_payload);
+        builder.add_box(b"mdat", &jpeg);
+        builder.buf[0..4].copy_from_slice(&declared_size.to_be_bytes());
+
+        let stream = ByteSliceStream::new(&builder.buf);
+        assert!(
+            matches!(extract_cr3_preview_data(&stream), Err(PiexError::CorruptData(_))),
+            "UUID_MOOV with declared box size {declared_size} (< 24) must fail"
+        );
+    }
+
+    // Exact minimum UUID_MOOV container size (24 bytes: 8-byte box header + 16-byte UUID)
+    // followed by a sibling uuid(UUID_PRVW) passes UUID_MOOV bounds validation.
+    let mut uuid_prvw_payload = Vec::new();
+    uuid_prvw_payload.extend_from_slice(&UUID_PRVW);
+    uuid_prvw_payload.extend_from_slice(&[0u8; 8]);
+    let mut inner = BoxBuilder::new();
+    inner.add_box(b"PRVW", &prvw_payload);
+    uuid_prvw_payload.extend_from_slice(&inner.buf);
+
+    let mut exact_builder = BoxBuilder::new();
+    exact_builder.add_box(b"uuid", &UUID_MOOV);
+    exact_builder.add_box(b"uuid", &uuid_prvw_payload);
+    exact_builder.add_box(b"mdat", &jpeg);
+    let stream = ByteSliceStream::new(&exact_builder.buf);
+    let data = extract_cr3_preview_data(&stream)
+        .expect("UUID_MOOV with exact minimum size 24 must pass container bounds check");
+    assert_eq!(data.preview.width, 1920);
+    assert_eq!(data.preview.height, 1080);
+}
+
+#[test]
+fn test_uuid_prvw_undersized_box_rejected() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1920, 1080, &jpeg);
+
+    for declared_size in [8u32, 24u32, 28u32, 31u32] {
+        let mut inner = BoxBuilder::new();
+        inner.add_box(b"PRVW", &prvw_payload);
+
+        let mut uuid_prvw_payload = Vec::new();
+        uuid_prvw_payload.extend_from_slice(&UUID_PRVW);
+        uuid_prvw_payload.extend_from_slice(&[0u8; 8]);
+        uuid_prvw_payload.extend_from_slice(&inner.buf);
+
+        let mut builder = BoxBuilder::new();
+        builder.add_box(b"uuid", &uuid_prvw_payload);
+        builder.add_box(b"mdat", &jpeg);
+        builder.buf[0..4].copy_from_slice(&declared_size.to_be_bytes());
+
+        let stream = ByteSliceStream::new(&builder.buf);
+        assert!(
+            matches!(extract_cr3_preview_data(&stream), Err(PiexError::CorruptData(_))),
+            "UUID_PRVW with declared box size {declared_size} (< 32) must fail"
+        );
+    }
+
+    // Exact minimum UUID_PRVW container size (32 bytes: 8-byte header + 16-byte UUID + 8-byte pad)
+    // followed by a valid uuid(UUID_PRVW) passes UUID_PRVW bounds validation.
+    let mut empty_uuid_prvw = Vec::new();
+    empty_uuid_prvw.extend_from_slice(&UUID_PRVW);
+    empty_uuid_prvw.extend_from_slice(&[0u8; 8]);
+
+    let mut full_uuid_prvw = empty_uuid_prvw.clone();
+    let mut inner = BoxBuilder::new();
+    inner.add_box(b"PRVW", &prvw_payload);
+    full_uuid_prvw.extend_from_slice(&inner.buf);
+
+    let mut exact_builder = BoxBuilder::new();
+    exact_builder.add_box(b"uuid", &empty_uuid_prvw);
+    exact_builder.add_box(b"uuid", &full_uuid_prvw);
+    exact_builder.add_box(b"mdat", &jpeg);
+    let stream = ByteSliceStream::new(&exact_builder.buf);
+    let data = extract_cr3_preview_data(&stream)
+        .expect("UUID_PRVW with exact minimum size 32 must pass container bounds check");
+    assert_eq!(data.preview.width, 1920);
+    assert_eq!(data.preview.height, 1080);
+}
+
+#[test]
+fn test_craw_box_minimum_size_bounds() {
+    let jpeg = create_valid_jpeg_payload();
+    let moov = build_stbl_tree(3, jpeg.len() as u32, 0, b"CRAW");
+    let mut base = BoxBuilder::new();
+    base.buf.extend_from_slice(&moov);
+    base.add_box(b"mdat", &jpeg);
+
+    let craw_tag_pos = base.buf.windows(4).position(|w| w == b"CRAW").expect("CRAW tag present");
+    let craw_size_pos = craw_tag_pos - 4;
+
+    for undersized in [8u32, 87u32] {
+        let mut mutated = base.buf.clone();
+        mutated[craw_size_pos..craw_size_pos + 4].copy_from_slice(&undersized.to_be_bytes());
+        let stream = ByteSliceStream::new(&mutated);
+        assert!(
+            matches!(extract_cr3_preview_data(&stream), Err(PiexError::CorruptData(_))),
+            "CRAW box with declared size {undersized} (< 88) must be rejected"
+        );
+    }
+
+    let mut exact_min = base.buf;
+    exact_min[craw_size_pos..craw_size_pos + 4].copy_from_slice(&88u32.to_be_bytes());
+    let stream = ByteSliceStream::new(&exact_min);
+    let data =
+        extract_cr3_preview_data(&stream).expect("CRAW box with exact minimum size 88 must pass");
+    assert_eq!(data.preview.width, 3840);
+    assert_eq!(data.preview.height, 2160);
+}
+
+#[test]
+fn test_craw_box_exceeding_enclosing_stsd_rejected() {
+    let jpeg = create_valid_jpeg_payload();
+    let moov = build_stbl_tree(3, jpeg.len() as u32, 0, b"CRAW");
+    let mut base = BoxBuilder::new();
+    base.buf.extend_from_slice(&moov);
+    base.add_box(b"mdat", &jpeg);
+
+    let craw_tag_pos = base.buf.windows(4).position(|w| w == b"CRAW").expect("CRAW tag present");
+    let craw_size_pos = craw_tag_pos - 4;
+
+    for oversized in [101u32, 0x10000u32] {
+        let mut mutated = base.buf.clone();
+        mutated[craw_size_pos..craw_size_pos + 4].copy_from_slice(&oversized.to_be_bytes());
+        let stream = ByteSliceStream::new(&mutated);
+        assert!(
+            matches!(extract_cr3_preview_data(&stream), Err(PiexError::CorruptData(_))),
+            "CRAW box with declared size {oversized} (> stsd size) must be rejected"
+        );
+    }
+}
