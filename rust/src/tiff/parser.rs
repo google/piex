@@ -324,9 +324,6 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
                 0xFFDA => break, // Start of Scan (SOS) - image payload begins
                 _ => {
                     let length = self.read_u16_be(offset)?;
-                    if length < 2 {
-                        return Err(TiffError::CorruptedEntry { offset });
-                    }
                     offset = offset
                         .checked_add(length as u32)
                         .ok_or(TiffError::CorruptedEntry { offset })?;
