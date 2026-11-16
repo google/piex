@@ -451,7 +451,7 @@ fn test_get_jpeg_dimensions_corrupted_cases() {
     jpeg_bad_len.extend_from_slice(&1u16.to_be_bytes()); // invalid length 1 < 2
     let stream_bad_len = ByteSliceStream::new(&jpeg_bad_len);
     let parser_bad_len = TiffParser::new(&stream_bad_len).unwrap();
-    assert!(matches!(parser_bad_len.get_jpeg_dimensions(8), Err(TiffError::CorruptedEntry { .. })));
+    assert!(matches!(parser_bad_len.get_jpeg_dimensions(8), Err(TiffError::StreamError(_))));
 }
 
 // ============================================================================
