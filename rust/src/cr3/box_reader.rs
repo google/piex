@@ -202,7 +202,7 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
             .get_data(ext_offset, &mut len_buf)
             .map_err(|_| PiexError::InvalidBoxHeader { offset })?;
 
-        let length_64 = u64::from_be_bytes(len_buf);
+        let length_64 = u64::from_be_bytes(len_buf) as usize as u64;
         let header_off = match offset.checked_add(16) {
             Some(val) => val,
             None => return Err(PiexError::InvalidBoxHeader { offset }),
@@ -232,8 +232,8 @@ pub fn read_next_box<R: StreamInterface + ?Sized>(
         return Err(PiexError::InvalidBoxHeader { offset });
     }
 
-    let next_box_offset = match offset.checked_add(total_length) {
-        Some(val) => val,
+    let next_box_offset = match offset_usize.checked_add(total_length as usize) {
+        Some(val) => val as u64,
         None => return Err(PiexError::InvalidBoxHeader { offset }),
     };
 
