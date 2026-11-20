@@ -127,6 +127,13 @@ fn process_craw_box<R: StreamInterface + ?Sized>(
     stream: &R,
     craw_box: &BoxHeader,
 ) -> Result<(u16, u16, u16), PiexError> {
+    const CONTENT_TYPE_OFFSET: u64 = 86;
+    const MIN_CRAW_BOX_SIZE: u64 = CONTENT_TYPE_OFFSET + 2;
+
+    if craw_box.total_length() < MIN_CRAW_BOX_SIZE {
+        return Err(PiexError::CorruptData("CRAW box too small".to_string()));
+    }
+
     let width_offset = craw_box
         .offset
         .checked_add(32)
@@ -139,7 +146,7 @@ fn process_craw_box<R: StreamInterface + ?Sized>(
         .ok_or_else(|| PiexError::CorruptData("CRAW box height offset overflow".to_string()))?;
     let height = read_u16_be(stream, height_offset)?;
 
-    let content_type_offset = craw_box.offset.checked_add(86).ok_or_else(|| {
+    let content_type_offset = craw_box.offset.checked_add(CONTENT_TYPE_OFFSET).ok_or_else(|| {
         PiexError::CorruptData("CRAW box content_type offset overflow".to_string())
     })?;
     let content_type = read_u16_be(stream, content_type_offset)?;
@@ -223,6 +230,9 @@ fn process_stbl_box<R: StreamInterface + ?Sized>(
 
     if craw_box.box_type != BoxType::CRAW {
         return Ok(());
+    }
+    if craw_box.next_box_offset > stsd_box.next_box_offset {
+        return Err(PiexError::CorruptData("CRAW box exceeds stsd box".to_string()));
     }
 
     let (width, height, content_type) = process_craw_box(stream, &craw_box)?;
@@ -384,11 +394,17 @@ fn process_box<R: StreamInterface + ?Sized>(
         stream.get_data(header_offset_usize, &mut uuid)?;
 
         if uuid == UUID_MOOV {
+            if box_header.payload_length() < 16 {
+                return Err(PiexError::CorruptData("UUID MOOV box too small".to_string()));
+            }
             let next_off = box_header.header_offset.checked_add(16).ok_or_else(|| {
                 PiexError::CorruptData("UUID MOOV box offset overflow".to_string())
             })?;
             return Ok(next_off);
         } else if uuid == UUID_PRVW {
+            if box_header.payload_length() < 24 {
+                return Err(PiexError::CorruptData("UUID PRVW box too small".to_string()));
+            }
             let next_off = box_header.header_offset.checked_add(24).ok_or_else(|| {
                 PiexError::CorruptData("UUID PRVW box offset overflow".to_string())
             })?;
@@ -404,13 +420,15 @@ fn process_box<R: StreamInterface + ?Sized>(
 
     if box_header.box_type == BoxType::MDAT {
         if let Some(ref mut mdat_img) = ctx.mdat_image {
-            let hdr_off_32 = u32::try_from(box_header.header_offset).map_err(|_| {
-                PiexError::CorruptData("MDAT box header offset overflowed 32-bit".to_string())
-            })?;
-            mdat_img.offset = mdat_img
-                .offset
-                .checked_add(hdr_off_32)
-                .ok_or_else(|| PiexError::CorruptData("MDAT offset overflow".to_string()))?;
+            if mdat_img.length > 0 {
+                let hdr_off_32 = u32::try_from(box_header.header_offset).map_err(|_| {
+                    PiexError::CorruptData("MDAT box header offset overflowed 32-bit".to_string())
+                })?;
+                mdat_img.offset = mdat_img
+                    .offset
+                    .checked_add(hdr_off_32)
+                    .ok_or_else(|| PiexError::CorruptData("MDAT offset overflow".to_string()))?;
+            }
         }
     } else if box_header.box_type == BoxType::STBL {
         process_stbl_box(stream, box_header, ctx)?;

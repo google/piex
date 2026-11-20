@@ -45,7 +45,8 @@ pub fn is_signature_matched(source: &[u8], offset: usize, needle: &[u8]) -> bool
     &source[offset..end] == needle
 }
 
-/// Checks if `needle` is found in `source` within the window `[search_offset, search_offset + search_range]`.
+/// Checks if `needle` is found in `source` within the window `[search_offset, search_offset +
+/// search_range]`.
 ///
 /// Matches C++ `IsSignatureFound` loop bound:
 ///   `i < search_offset + search_range - signature.size()`.
@@ -877,6 +878,28 @@ pub fn is_of_type(source: &[u8], target_type: RawImageType) -> bool {
 /// Returns the maximum number of header bytes required to identify any RAW format.
 pub fn get_number_of_bytes_for_is_raw_lite() -> usize {
     ALL_CHECKERS.iter().map(|checker| checker.requested_size()).max().unwrap_or(0)
+}
+
+/// Returns the smallest checker window size strictly greater than `after`,
+/// or `0` if no checker requires more than `after` bytes.
+pub fn next_recognition_window_size(after: usize) -> usize {
+    ALL_CHECKERS
+        .iter()
+        .map(|checker| checker.requested_size())
+        .filter(|&size| size > after)
+        .min()
+        .unwrap_or(0)
+}
+
+/// Identifies the RAW image format of `source` using only checkers whose
+/// `requested_size()` equals `window_size`, preserving `ALL_CHECKERS` order.
+pub fn recognize_raw_image_type_for_window(source: &[u8], window_size: usize) -> RawImageType {
+    ALL_CHECKERS
+        .iter()
+        .filter(|checker| checker.requested_size() == window_size)
+        .find(|checker| checker.is_my_type(source))
+        .map(|checker| checker.format_type())
+        .unwrap_or(RawImageType::NonRaw)
 }
 
 /// Returns the number of header bytes required to identify `target_type`.
