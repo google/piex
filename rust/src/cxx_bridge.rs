@@ -137,6 +137,8 @@ pub mod ffi {
         ) -> i32;
         fn rust_is_raw_lite(data: &[u8]) -> bool;
         fn rust_recognize_raw_image_type_lite(data: &[u8]) -> u32;
+        fn rust_next_recognition_window_size(after: usize) -> usize;
+        fn rust_recognize_raw_image_type_for_window(data: &[u8], window_size: usize) -> u32;
         fn rust_is_raw_type(raw_type: u32) -> bool;
         fn rust_is_of_type(data: &[u8], raw_type: u32) -> bool;
         fn rust_get_number_of_bytes_for_is_raw_lite() -> usize;
@@ -321,6 +323,18 @@ fn rust_is_raw_lite(data: &[u8]) -> bool {
 fn rust_recognize_raw_image_type_lite(data: &[u8]) -> u32 {
     catch_unwind(AssertUnwindSafe(|| format_recognizer::recognize_raw_image_type_lite(data) as u32))
         .unwrap_or(0)
+}
+
+fn rust_next_recognition_window_size(after: usize) -> usize {
+    catch_unwind(AssertUnwindSafe(|| format_recognizer::next_recognition_window_size(after)))
+        .unwrap_or(0)
+}
+
+fn rust_recognize_raw_image_type_for_window(data: &[u8], window_size: usize) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        format_recognizer::recognize_raw_image_type_for_window(data, window_size) as u32
+    }))
+    .unwrap_or(0)
 }
 
 fn rust_is_raw_type(raw_type: u32) -> bool {

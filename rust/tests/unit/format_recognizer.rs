@@ -739,3 +739,64 @@ fn test_checker_precedence_ordering() {
         "ERF checker (1024) must take precedence over DNG checker (1024) per C++ TypeCheckerList"
     );
 }
+
+#[test]
+fn test_type_check_window_ignores_bytes_past_requested_size() {
+    // The Epson checker inspects the first 1024 bytes and accepts "EPSON"
+    // starting at offsets 0..=1018.
+    for &(file_len, signature_pos, expected) in &[
+        (1040usize, 1018usize, RawImageType::Erf),
+        (1040, 1019, RawImageType::NonRaw),
+        (1040, 1022, RawImageType::NonRaw),
+        (1040, 1024, RawImageType::NonRaw),
+        (1024, 1018, RawImageType::Erf),
+        (1023, 100, RawImageType::NonRaw),
+        (1056, 1018, RawImageType::Erf),
+        (1056, 1019, RawImageType::NonRaw),
+        (1056, 1040, RawImageType::NonRaw),
+    ] {
+        let mut file = vec![0u8; file_len];
+        file[..4].copy_from_slice(b"II*\0");
+        file[signature_pos..signature_pos + 5].copy_from_slice(b"EPSON");
+        let case = format!("file_len={file_len} signature_pos={signature_pos}");
+        assert_eq!(recognize_raw_image_type_lite(&file), expected, "{case}");
+        assert_eq!(is_of_type(&file, RawImageType::Erf), expected == RawImageType::Erf, "{case}");
+    }
+}
+
+#[test]
+fn test_recognition_window_tiers_and_per_window_matching() {
+    use piex::format_recognizer::{
+        next_recognition_window_size, recognize_raw_image_type_for_window, ALL_CHECKERS,
+    };
+
+    let mut tiers = Vec::new();
+    let mut after = 0;
+    loop {
+        let next = next_recognition_window_size(after);
+        if next == 0 {
+            break;
+        }
+        assert!(next > after, "tiers must be strictly ascending");
+        tiers.push(next);
+        after = next;
+    }
+    assert_eq!(tiers.last().copied(), Some(get_number_of_bytes_for_is_raw_lite()));
+
+    // Every checker's window size appears in `tiers`, and ALL_CHECKERS is non-decreasing.
+    for pair in ALL_CHECKERS.windows(2) {
+        assert!(pair[0].requested_size() <= pair[1].requested_size());
+    }
+    for checker in ALL_CHECKERS {
+        assert!(tiers.contains(&checker.requested_size()));
+    }
+
+    // Per-window matching only runs checkers for that exact window size.
+    let mrw = make_mrw_header();
+    assert_eq!(recognize_raw_image_type_for_window(&mrw, 4), RawImageType::Mrw);
+    assert_eq!(recognize_raw_image_type_for_window(&mrw, 1024), RawImageType::NonRaw);
+
+    let arw = make_arw_header(true);
+    assert_eq!(recognize_raw_image_type_for_window(&arw, 1024), RawImageType::NonRaw);
+    assert_eq!(recognize_raw_image_type_for_window(&arw, 10_000), RawImageType::Arw);
+}

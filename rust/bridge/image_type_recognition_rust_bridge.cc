@@ -27,39 +27,51 @@ bool IsRaw(const RawImageTypes type) {
 }
 
 bool IsOfType(const RangeCheckedBytePtr& source, const RawImageTypes type) {
-  if (source.errorOccurred()) {
-    return false;
-  }
   const size_t req = bridge::rust_get_number_of_bytes_for_is_of_type(
       static_cast<uint32_t>(type));
-  const size_t len = std::min(source.remainingLength(), req);
-  if (len == 0 && req > 0) {
+  if (req == 0) {
     return false;
   }
-  const std::vector<uint8_t> buf = source.extractBytes(0, len);
-  if (buf.size() != len) {
+  const RangeCheckedBytePtr limited_source = source.pointerToSubArray(0, req);
+  if (limited_source.errorOccurred()) {
     return false;
   }
+  const std::vector<uint8_t> buf = limited_source.extractBytes(0, req);
   const rust::Slice<const uint8_t> slice(buf.data(), buf.size());
   return bridge::rust_is_of_type(slice, static_cast<uint32_t>(type));
 }
 
 RawImageTypes RecognizeRawImageTypeLite(const RangeCheckedBytePtr& source) {
-  if (source.errorOccurred()) {
-    return kNonRawImage;
+  // Step through the ascending checker window sizes reported by Rust so each
+  // tier narrows `source` via pointerToSubArray(0, tier) identically to C++
+  // TypeChecker::LimitSource: a match at a smaller tier never reads or
+  // requires pages from larger tiers, and a shorter buffer sets
+  // source.errorOccurred() at the first unfulfilled tier. Bytes are appended
+  // incrementally into one buffer and only the checkers for `tier` are run.
+  std::vector<uint8_t> buf;
+  size_t prev_tier = 0;
+  for (size_t tier = bridge::rust_next_recognition_window_size(0); tier != 0;
+       tier = bridge::rust_next_recognition_window_size(tier)) {
+    const RangeCheckedBytePtr limited_source =
+        source.pointerToSubArray(0, tier);
+    if (limited_source.errorOccurred()) {
+      return kNonRawImage;
+    }
+    if (tier > buf.capacity()) {
+      buf.reserve(std::max(tier, buf.capacity() * 2));
+    }
+    for (size_t i = prev_tier; i < tier; ++i) {
+      buf.push_back(limited_source[i]);
+    }
+    prev_tier = tier;
+    const rust::Slice<const uint8_t> slice(buf.data(), buf.size());
+    const auto matched = static_cast<RawImageTypes>(
+        bridge::rust_recognize_raw_image_type_for_window(slice, tier));
+    if (matched != kNonRawImage) {
+      return matched;
+    }
   }
-  const size_t req = bridge::rust_get_number_of_bytes_for_is_raw_lite();
-  const size_t len = std::min(source.remainingLength(), req);
-  if (len == 0) {
-    return kNonRawImage;
-  }
-  const std::vector<uint8_t> buf = source.extractBytes(0, len);
-  if (buf.size() != len) {
-    return kNonRawImage;
-  }
-  const rust::Slice<const uint8_t> slice(buf.data(), buf.size());
-  const uint32_t type_val = bridge::rust_recognize_raw_image_type_lite(slice);
-  return static_cast<RawImageTypes>(type_val);
+  return kNonRawImage;
 }
 
 size_t GetNumberOfBytesForIsRawLite() {
