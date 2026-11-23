@@ -1447,14 +1447,20 @@ fn test_craw_size_and_stsd_containment_boundaries() {
     // fallback PRVW box when the entry is skipped, or `None` when the file is rejected.
     let (craw, prvw) = (Some((3840, 2160)), Some((1920, 1080)));
     for (tag, entry_len, expected) in [
-        (b"CRAW", 8u32, None),
+        (b"CRAW", 0u32, None),
+        (b"CRAW", 4, None),
+        (b"CRAW", 7, None),
+        (b"CRAW", 8, None),
         (b"CRAW", 87, None),
         (b"CRAW", 88, craw),
         (b"CRAW", 89, craw),
         (b"CRAW", 99, craw),
         (b"CRAW", 100, craw),
         (b"CRAW", 101, None),
-        // The size and containment checks apply only to CRAW entries.
+        // Sizes < 8 are invalid box headers for any tag; >= 8 non-CRAW entries are skipped.
+        (b"CTMD", 0, None),
+        (b"CTMD", 4, None),
+        (b"CTMD", 7, None),
         (b"CTMD", 8, prvw),
         (b"CTMD", 101, prvw),
         (b"CTMD", 0x10000, prvw),
