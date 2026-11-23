@@ -1438,3 +1438,40 @@ fn test_uuid_container_payload_length_boundaries() {
         }
     }
 }
+
+#[test]
+fn test_craw_size_and_stsd_containment_boundaries() {
+    let jpeg = create_valid_jpeg_payload();
+    let prvw_payload = create_prvw_payload(1920, 1080, &jpeg);
+    // `expected` is the preview size: 3840x2160 from the CRAW entry, 1920x1080 from the
+    // fallback PRVW box when the entry is skipped, or `None` when the file is rejected.
+    let (craw, prvw) = (Some((3840, 2160)), Some((1920, 1080)));
+    for (tag, entry_len, expected) in [
+        (b"CRAW", 8u32, None),
+        (b"CRAW", 87, None),
+        (b"CRAW", 88, craw),
+        (b"CRAW", 89, craw),
+        (b"CRAW", 99, craw),
+        (b"CRAW", 100, craw),
+        (b"CRAW", 101, None),
+        // The size and containment checks apply only to CRAW entries.
+        (b"CTMD", 8, prvw),
+        (b"CTMD", 101, prvw),
+        (b"CTMD", 0x10000, prvw),
+    ] {
+        let mut moov = build_stbl_tree(3, jpeg.len() as u32, 0, tag);
+        let tag_pos = moov.windows(4).position(|w| w == tag).unwrap();
+        moov[tag_pos - 4..tag_pos].copy_from_slice(&entry_len.to_be_bytes());
+
+        let mut builder = BoxBuilder::new();
+        builder.add_box(b"ftyp", b"crx \0\0\0\x01crx \0\0\0\0");
+        builder.buf.extend_from_slice(&moov);
+        builder.add_box(b"PRVW", &prvw_payload);
+        builder.add_box(b"mdat", &jpeg);
+
+        let stream = ByteSliceStream::new(&builder.buf);
+        let got =
+            extract_cr3_preview_data(&stream).ok().map(|d| (d.preview.width, d.preview.height));
+        assert_eq!(got, expected, "tag={tag:?} entry_len={entry_len}");
+    }
+}

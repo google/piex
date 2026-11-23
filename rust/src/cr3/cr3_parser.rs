@@ -127,6 +127,13 @@ fn process_craw_box<R: StreamInterface + ?Sized>(
     stream: &R,
     craw_box: &BoxHeader,
 ) -> Result<(u16, u16, u16), PiexError> {
+    const CONTENT_TYPE_OFFSET: u64 = 86;
+    const MIN_CRAW_BOX_SIZE: u64 = CONTENT_TYPE_OFFSET + 2;
+
+    if craw_box.total_length() < MIN_CRAW_BOX_SIZE {
+        return Err(PiexError::CorruptData("CRAW box too small".to_string()));
+    }
+
     let width_offset = craw_box
         .offset
         .checked_add(32)
@@ -139,7 +146,7 @@ fn process_craw_box<R: StreamInterface + ?Sized>(
         .ok_or_else(|| PiexError::CorruptData("CRAW box height offset overflow".to_string()))?;
     let height = read_u16_be(stream, height_offset)?;
 
-    let content_type_offset = craw_box.offset.checked_add(86).ok_or_else(|| {
+    let content_type_offset = craw_box.offset.checked_add(CONTENT_TYPE_OFFSET).ok_or_else(|| {
         PiexError::CorruptData("CRAW box content_type offset overflow".to_string())
     })?;
     let content_type = read_u16_be(stream, content_type_offset)?;
@@ -223,6 +230,9 @@ fn process_stbl_box<R: StreamInterface + ?Sized>(
 
     if craw_box.box_type != BoxType::CRAW {
         return Ok(());
+    }
+    if craw_box.next_box_offset > stsd_box.next_box_offset {
+        return Err(PiexError::CorruptData("CRAW box exceeds stsd box".to_string()));
     }
 
     let (width, height, content_type) = process_craw_box(stream, &craw_box)?;
