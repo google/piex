@@ -99,16 +99,29 @@ struct ProcessData {
   Image prvw_image;
 };
 
-// Wraps Get16u w/ assumption that CR3 is always big endian, based on
-// ISO/IEC 14496-12 specification that all box fields are big endian.
+// Always big endian, based on ISO/IEC 14496-12 specification that all box
+// fields are big endian. Reads directly from `stream` at the full `size_t`
+// offset so offsets past 4 GiB are preserved without changing tiff_parser.h's
+// 32-bit Get16u/Get32u ABI.
 bool Get16u(StreamInterface* stream, size_t offset, std::uint16_t* value) {
-  return Get16u(stream, offset, tiff_directory::kBigEndian, value);
+  std::uint8_t data[2];
+  if (stream->GetData(offset, 2, data) != kOk) {
+    return false;
+  }
+  *value = static_cast<std::uint16_t>((data[0] * 0x100u) | data[1]);
+  return true;
 }
 
-// Wraps Get32u w/ assumption that CR3 is always big endian, based on
-// ISO/IEC 14496-12 specification that all box fields are big endian.
+// Always big endian, based on ISO/IEC 14496-12 specification that all box
+// fields are big endian.
 bool Get32u(StreamInterface* stream, size_t offset, std::uint32_t* value) {
-  return Get32u(stream, offset, tiff_directory::kBigEndian, value);
+  std::uint8_t data[4];
+  if (stream->GetData(offset, 4, data) != kOk) {
+    return false;
+  }
+  *value = (data[0] * 0x1000000u) | (data[1] * 0x10000u) | (data[2] * 0x100u) |
+           data[3];
+  return true;
 }
 
 // Always big endian, based on ISO/IEC 14496-12 specification that all box
@@ -153,7 +166,9 @@ bool ProcessJpegBox(StreamInterface* stream, const Box& box, Image* image) {
       box.tag() == kPrvwTag ? kPrvwJpegOffsets : kThmbJpegOffsets;
   uint16_t width, height;
   uint32_t jpeg_size;
-  if (!Get16u(stream, box.offset() + offsets.width, &width)) {
+  if (box.offset() >
+          std::numeric_limits<std::uint32_t>::max() - offsets.jpeg_data ||
+      !Get16u(stream, box.offset() + offsets.width, &width)) {
     return false;
   }
   if (!Get16u(stream, box.offset() + offsets.height, &height)) {
@@ -177,7 +192,9 @@ bool ParseExifIfd0(StreamInterface* stream, size_t tiff_offset,
                                      kTiffTagOrientation, kTiffTagImageWidth,
                                      kTiffTagImageLength};
   TiffContent content;
-  TiffParser(stream, tiff_offset).Parse(kIfd0TagSet, 1, &content);
+  if (tiff_offset <= std::numeric_limits<std::uint32_t>::max()) {
+    TiffParser(stream, tiff_offset).Parse(kIfd0TagSet, 1, &content);
+  }
   if (content.tiff_directory.size() != 1) {
     return false;
   }
@@ -200,7 +217,9 @@ bool ParseExifExifIfd(StreamInterface* stream, size_t tiff_offset,
                                         kExifTagExposureTime, kExifTagFnumber,
                                         kExifTagFocalLength, kExifTagIsoSpeed};
   TiffContent content;
-  TiffParser(stream, tiff_offset).Parse(kExifIfdTagSet, 1, &content);
+  if (tiff_offset <= std::numeric_limits<std::uint32_t>::max()) {
+    TiffParser(stream, tiff_offset).Parse(kExifIfdTagSet, 1, &content);
+  }
   if (content.tiff_directory.size() != 1) {
     return false;
   }
@@ -503,8 +522,12 @@ size_t ProcessBox(StreamInterface* stream, const Box& box, ProcessData* data) {
   if (box.tag() == kMdatTag) {
     // mdat_image.offset is relative to mdat's header, update it to be absolute
     // offset to the image data.
-    data->mdat_image.offset += box.header_offset();
-    success = true;
+    success = data->mdat_image.length == 0 ||
+              box.header_offset() <= std::numeric_limits<std::uint32_t>::max() -
+                                         data->mdat_image.offset;
+    if (success && data->mdat_image.length > 0) {
+      data->mdat_image.offset += box.header_offset();
+    }
   } else if (box.tag() == kStblTag) {
     success = ProcessStblBox(stream, box, data);
   } else if (box.tag() == kPrvwTag) {
