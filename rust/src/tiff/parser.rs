@@ -278,12 +278,7 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
                 _ => return Err(TiffError::TagNotFound { tag: TIFF_TAG_COMPRESSION }),
             };
 
-            length = strip_byte_counts
-                .iter()
-                .try_fold(0u32, |acc, &count| acc.checked_add(count))
-                .ok_or(TiffError::CorruptedEntry {
-                    offset: *strip_offsets.first().unwrap_or(&0),
-                })?;
+            length = strip_byte_counts.iter().fold(0u32, |acc, &count| acc.wrapping_add(count));
             offset = *strip_offsets.first().unwrap_or(&0);
         } else if dir.has(PANASONIC_TAG_JPEG_IMAGE) {
             let (off, len) =
@@ -776,7 +771,7 @@ impl<'a, S: StreamInterface + ?Sized> TiffParser<'a, S> {
         strip_offsets
             .windows(2)
             .zip(strip_byte_counts.iter())
-            .all(|(w, &count)| w[0].checked_add(count) == Some(w[1]))
+            .all(|(w, &count)| w[0].wrapping_add(count) == w[1])
     }
 
     fn read_u16(&self, offset: u32) -> Result<u16, TiffError> {
