@@ -70,9 +70,11 @@ void CopyPreviewData(const bridge::PreviewImageData& src,
   dst->gps.date_stamp = ToString(src.gps.date_stamp);
 
   // Like C++ PIEX, write the two CFA dimensions in place.
-  dst->cfa_pattern_dim.resize(std::max<size_t>(dst->cfa_pattern_dim.size(), 2));
-  dst->cfa_pattern_dim[0] = src.cfa_pattern_dim[0];
-  dst->cfa_pattern_dim[1] = src.cfa_pattern_dim[1];
+  if (dst->cfa_pattern_dim.size() >= 2 || src.cfa_pattern_dim[0] != 0 ||
+      src.cfa_pattern_dim[1] != 0) {
+    dst->cfa_pattern_dim[0] = src.cfa_pattern_dim[0];
+    dst->cfa_pattern_dim[1] = src.cfa_pattern_dim[1];
+  }
 }
 
 // Converts caller state into bridge state so that the Rust implementation
