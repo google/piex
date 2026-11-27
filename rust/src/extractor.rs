@@ -471,15 +471,13 @@ fn get_dng_info_internal<S: StreamInterface + ?Sized>(
         &first_dir.sub_directories()[0]
     };
 
-    if let Ok((w, h)) = parser.get_full_dimension32(target_dir) {
-        if w > 0 && h > 0 {
+    match parser.get_full_dimension32(target_dir) {
+        Ok((w, h)) if w > 0 && h > 0 => {
             *width = w;
             *height = h;
-        } else {
-            return false;
         }
-    } else {
-        return false;
+        Err(TiffError::TagNotFound { .. }) if *width > 0 && *height > 0 => {}
+        _ => return false,
     }
 
     if let Ok(cfa_vec) = target_dir.get_u32_vec(TIFF_TAG_CFA_PATTERN_DIM) {
