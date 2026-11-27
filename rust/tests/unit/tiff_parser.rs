@@ -857,3 +857,91 @@ fn test_regression_crash_04_tiff_parser_truncated_ifd_bounds() {
     // Should return error for truncated IFD entries rather than panicking or out of bounds access
     assert!(res.is_err());
 }
+
+#[test]
+fn test_parse_sub_ifd_with_tiff_ifd_type_and_reject_short() {
+    for endian in [Endian::Little, Endian::Big] {
+        // Single inline SubIFD encoded with TiffType::Ifd (13).
+        let mut writer = TiffWriter::new(endian);
+        writer.write_header(8);
+        writer.buf.extend_from_slice(&writer.pack_u16(1));
+        writer.write_entry_offset(EXIF_TAG_SUB_IFDS as u16, TiffType::Ifd, 1, 26);
+        writer.buf.extend_from_slice(&writer.pack_u32(0));
+        writer.buf.extend_from_slice(&writer.pack_u16(4));
+        writer.write_entry_offset(TIFF_TAG_IMAGE_WIDTH as u16, TiffType::Long, 1, 4000);
+        writer.write_entry_offset(TIFF_TAG_IMAGE_LENGTH as u16, TiffType::Long, 1, 3000);
+        writer.write_entry_offset(TIFF_TAG_JPEG_OFFSET as u16, TiffType::Long, 1, 7);
+        writer.write_entry_offset(TIFF_TAG_JPEG_BYTE_COUNT as u16, TiffType::Long, 1, 6);
+        writer.buf.extend_from_slice(&writer.pack_u32(0));
+
+        let stream = ByteSliceStream::new(&writer.buf);
+        let parser = TiffParser::new(&stream).unwrap();
+        let content = parser
+            .parse(
+                &[
+                    EXIF_TAG_SUB_IFDS,
+                    TIFF_TAG_IMAGE_WIDTH,
+                    TIFF_TAG_IMAGE_LENGTH,
+                    TIFF_TAG_JPEG_OFFSET,
+                    TIFF_TAG_JPEG_BYTE_COUNT,
+                ],
+                2,
+            )
+            .unwrap();
+        assert_eq!(content.tiff_directories[0].sub_directories().len(), 1, "{endian:?}");
+        let mut preview_data = PreviewImageData::default();
+        parser.get_preview_image_data(&content, &mut preview_data).unwrap();
+        assert_eq!((preview_data.full_width, preview_data.full_height), (4000, 3000), "{endian:?}");
+        assert_eq!(
+            (preview_data.thumbnail.offset, preview_data.thumbnail.length),
+            (7, 6),
+            "{endian:?}"
+        );
+
+        // Multiple out-of-line SubIFDs encoded with TiffType::Ifd (13).
+        let mut multi = TiffWriter::new(endian);
+        multi.write_header(8);
+        multi.buf.extend_from_slice(&multi.pack_u16(1));
+        multi.write_entry_offset(EXIF_TAG_SUB_IFDS as u16, TiffType::Ifd, 2, 26);
+        multi.buf.extend_from_slice(&multi.pack_u32(0));
+        let off0 = multi.pack_u32(34);
+        let off1 = multi.pack_u32(52);
+        multi.buf.extend_from_slice(&off0);
+        multi.buf.extend_from_slice(&off1);
+        multi.buf.extend_from_slice(&multi.pack_u16(1));
+        multi.write_entry_offset(TIFF_TAG_SUB_FILE_TYPE as u16, TiffType::Long, 1, 1);
+        multi.buf.extend_from_slice(&multi.pack_u32(0));
+        multi.buf.extend_from_slice(&multi.pack_u16(3));
+        multi.write_entry_offset(TIFF_TAG_SUB_FILE_TYPE as u16, TiffType::Long, 1, 0);
+        multi.write_entry_offset(TIFF_TAG_IMAGE_WIDTH as u16, TiffType::Long, 1, 6000);
+        multi.write_entry_offset(TIFF_TAG_IMAGE_LENGTH as u16, TiffType::Long, 1, 4000);
+        multi.buf.extend_from_slice(&multi.pack_u32(0));
+
+        let multi_stream = ByteSliceStream::new(&multi.buf);
+        let multi_parser = TiffParser::new(&multi_stream).unwrap();
+        let multi_content = multi_parser
+            .parse(
+                &[
+                    EXIF_TAG_SUB_IFDS,
+                    TIFF_TAG_SUB_FILE_TYPE,
+                    TIFF_TAG_IMAGE_WIDTH,
+                    TIFF_TAG_IMAGE_LENGTH,
+                ],
+                2,
+            )
+            .unwrap();
+        assert_eq!(multi_content.tiff_directories[0].sub_directories().len(), 2);
+
+        // TiffType::Short (3) for SubIFDs is ignored without error.
+        let mut short = TiffWriter::new(endian);
+        short.write_header(8);
+        short.buf.extend_from_slice(&short.pack_u16(1));
+        let packed_short = short.pack_u16(26);
+        short.write_entry_inline(EXIF_TAG_SUB_IFDS as u16, TiffType::Short, 1, &packed_short);
+        short.buf.extend_from_slice(&short.pack_u32(0));
+        let short_stream = ByteSliceStream::new(&short.buf);
+        let short_parser = TiffParser::new(&short_stream).unwrap();
+        let short_content = short_parser.parse(&[EXIF_TAG_SUB_IFDS], 2).unwrap();
+        assert!(short_content.tiff_directories[0].sub_directories().is_empty());
+    }
+}
