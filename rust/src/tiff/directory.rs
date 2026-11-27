@@ -198,34 +198,19 @@ pub struct DirectoryEntry {
     pub count: u32,
     /// Byte offset of entry's data in stream, or 0 if contained in entry or unassigned.
     pub offset: u32,
-    /// Byte representation of entry value(s) stored inline if <= 8 bytes.
+    /// Byte representation of entry value(s).
     pub value: EntryValue,
 }
 
 impl DirectoryEntry {
     /// Creates a new `DirectoryEntry` instance from a `Vec<u8>`.
     pub fn new(type_: TiffType, count: u32, offset: u32, value: Vec<u8>) -> Self {
-        let val = if value.len() <= 8 {
-            let mut buf = [0u8; 8];
-            buf[..value.len()].copy_from_slice(&value);
-            EntryValue::Inline(buf, value.len() as u8)
-        } else {
-            EntryValue::Heap(value)
-        };
-        Self { type_, count, offset, value: val }
+        Self { type_, count, offset, value: EntryValue::Heap(value) }
     }
 
-    /// Creates a new `DirectoryEntry` instance from a byte slice,
-    /// storing inline if `<= 8` bytes to avoid heap allocations.
+    /// Creates a new `DirectoryEntry` instance from a byte slice.
     pub fn new_slice(type_: TiffType, count: u32, offset: u32, value: &[u8]) -> Self {
-        let val = if value.len() <= 8 {
-            let mut buf = [0u8; 8];
-            buf[..value.len()].copy_from_slice(value);
-            EntryValue::Inline(buf, value.len() as u8)
-        } else {
-            EntryValue::Heap(value.to_vec())
-        };
-        Self { type_, count, offset, value: val }
+        Self { type_, count, offset, value: EntryValue::Heap(value.to_vec()) }
     }
 
     /// Returns a byte slice of the entry value.
@@ -238,7 +223,7 @@ impl DirectoryEntry {
 /// Represents a TIFF Image File Directory (IFD).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TiffDirectory {
-    directory_entries: Vec<(u32, DirectoryEntry)>,
+    directory_entries: Vec<(u32, Box<DirectoryEntry>)>,
     tag_order: Vec<u32>,
     sub_directories: Vec<TiffDirectory>,
     endian: Endian,
@@ -261,7 +246,7 @@ impl TiffDirectory {
     }
 
     fn find_entry(&self, tag: u32) -> Option<&DirectoryEntry> {
-        self.directory_entries.iter().find(|(t, _)| *t == tag).map(|(_, e)| e)
+        self.directory_entries.iter().find(|(t, _)| *t == tag).map(|(_, e)| &**e)
     }
 
     /// Checks if tag is present in directory.
@@ -546,10 +531,10 @@ impl TiffDirectory {
     /// Adds a `DirectoryEntry` to directory.
     pub fn add_directory_entry(&mut self, tag: u32, entry: DirectoryEntry) {
         if let Some(pos) = self.directory_entries.iter().position(|(t, _)| *t == tag) {
-            self.directory_entries[pos] = (tag, entry);
+            self.directory_entries[pos] = (tag, Box::new(entry));
         } else {
             self.tag_order.push(tag);
-            self.directory_entries.push((tag, entry));
+            self.directory_entries.push((tag, Box::new(entry)));
         }
     }
 
