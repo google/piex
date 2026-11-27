@@ -483,7 +483,7 @@ class MosTypeChecker : public TypeChecker {
     RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
-    if (!DetermineEndianness(source, &use_big_endian)) {
+    if (!DetermineEndianness(limited_source, &use_big_endian)) {
       return false;
     }
 
@@ -816,7 +816,7 @@ class Rw2TypeChecker : public TypeChecker {
     RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
-    if (!DetermineEndianness(source, &use_big_endian)) {
+    if (!DetermineEndianness(limited_source, &use_big_endian)) {
       return false;
     }
 
@@ -840,7 +840,7 @@ class SrwTypeChecker : public TypeChecker {
     RangeCheckedBytePtr limited_source = LimitSource(source);
 
     bool use_big_endian;
-    if (!DetermineEndianness(source, &use_big_endian)) {
+    if (!DetermineEndianness(limited_source, &use_big_endian)) {
       return false;
     }
 
@@ -854,7 +854,8 @@ class SrwTypeChecker : public TypeChecker {
     }
 
     const string kSignature("SAMSUNG");
-    if (!IsSignatureFound(source, 0, RequestedSize(), kSignature, NULL)) {
+    if (!IsSignatureFound(limited_source, 0, RequestedSize(), kSignature,
+                          NULL)) {
       return false;
     }
     return true;
