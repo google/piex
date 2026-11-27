@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -171,7 +172,9 @@ bool GetMakernoteIfd(const TiffDirectory& exif_ifd, const Endian endian,
   std::uint32_t makernote_length;
   if (!exif_ifd.GetOffsetAndLength(kExifTagMakernotes,
                                    tiff_directory::TIFF_TYPE_UNDEFINED,
-                                   makernote_offset, &makernote_length)) {
+                                   makernote_offset, &makernote_length) ||
+      *makernote_offset >
+          std::numeric_limits<std::uint32_t>::max() - skip_offset) {
     return false;
   }
 
@@ -196,7 +199,9 @@ bool GetCameraSettingsIfd(const TiffDirectory& makernote_ifd,
 
   std::uint32_t next_ifd_offset;
   if (!Get32u(stream, camera_settings_offset, endian,
-              &camera_settings_offset)) {
+              &camera_settings_offset) ||
+      camera_settings_offset >
+          std::numeric_limits<std::uint32_t>::max() - makernote_offset) {
     return false;
   }
   return ParseDirectory(makernote_offset,
@@ -219,7 +224,9 @@ bool GetRawProcessingIfd(const TagSet& desired_tags,
   }
 
   std::uint32_t next_ifd_offset;
-  if (!Get32u(stream, raw_processing_offset, endian, &raw_processing_offset)) {
+  if (!Get32u(stream, raw_processing_offset, endian, &raw_processing_offset) ||
+      raw_processing_offset >
+          std::numeric_limits<std::uint32_t>::max() - makernote_offset) {
     return false;
   }
 
@@ -228,9 +235,10 @@ bool GetRawProcessingIfd(const TagSet& desired_tags,
       desired_tags, stream, raw_processing_ifd, &next_ifd_offset);
 }
 
-// Retrieves the preview image offset and length from the camera settings and
-// the 'full_width' and 'full_height' from the raw processing ifd in 'stream'.
-// Returns false if anything is wrong.
+// Retrieves the thumbnail, preview image offset and length from the camera
+// settings, and the 'full_width' and 'full_height' from the raw processing ifd
+// in 'stream'. Returns false if the TIFF, Exif, or MakerNote header cannot be
+// parsed.
 bool GetOlympusPreviewImage(StreamInterface* stream,
                             PreviewImageData* preview_image_data) {
   Endian endian;
@@ -253,40 +261,38 @@ bool GetOlympusPreviewImage(StreamInterface* stream,
 
   const std::uint32_t kThumbnailTag = 0x0100;
   if (makernote_ifd.Has(kThumbnailTag)) {
-    if (!makernote_ifd.GetOffsetAndLength(
+    std::uint32_t thumbnail_offset = 0;
+    std::uint32_t thumbnail_length = 0;
+    if (makernote_ifd.GetOffsetAndLength(
             kThumbnailTag, tiff_directory::TIFF_TYPE_UNDEFINED,
-            &preview_image_data->thumbnail.offset,
-            &preview_image_data->thumbnail.length)) {
-      return false;
+            &thumbnail_offset, &thumbnail_length)) {
+      preview_image_data->thumbnail.offset = thumbnail_offset;
+      preview_image_data->thumbnail.length = thumbnail_length;
     }
   }
 
   TiffDirectory camera_settings_ifd(endian);
-  if (!GetCameraSettingsIfd(makernote_ifd, makernote_offset, endian, stream,
-                            &camera_settings_ifd)) {
-    return false;
+  if (GetCameraSettingsIfd(makernote_ifd, makernote_offset, endian, stream,
+                           &camera_settings_ifd)) {
+    const std::uint32_t kPreviewOffset = 0x0101;
+    const std::uint32_t kPreviewLength = 0x0102;
+    std::uint32_t preview_offset = 0;
+    std::uint32_t preview_length = 0;
+    if (camera_settings_ifd.Get(kPreviewOffset, &preview_offset) &&
+        camera_settings_ifd.Get(kPreviewLength, &preview_length) &&
+        preview_offset <=
+            std::numeric_limits<std::uint32_t>::max() - makernote_offset) {
+      preview_image_data->preview.offset = preview_offset + makernote_offset;
+      preview_image_data->preview.length = preview_length;
+    }
   }
-
-  const std::uint32_t kPreviewOffset = 0x0101;
-  const std::uint32_t kPreviewLength = 0x0102;
-  if (!camera_settings_ifd.Has(kPreviewOffset) ||
-      !camera_settings_ifd.Has(kPreviewLength)) {
-    return false;
-  }
-
-  camera_settings_ifd.Get(kPreviewOffset, &preview_image_data->preview.offset);
-  preview_image_data->preview.offset += makernote_offset;
-  camera_settings_ifd.Get(kPreviewLength, &preview_image_data->preview.length);
 
   // Get the crop size from the raw processing ifd.
   TiffDirectory raw_processing_ifd(endian);
-  if (!GetRawProcessingIfd({kOlymTagAspectFrame}, makernote_ifd,
-                           makernote_offset, endian, stream,
-                           &raw_processing_ifd)) {
-    return false;
-  }
-
-  if (raw_processing_ifd.Has(kOlymTagAspectFrame)) {
+  if (GetRawProcessingIfd({kOlymTagAspectFrame}, makernote_ifd,
+                          makernote_offset, endian, stream,
+                          &raw_processing_ifd) &&
+      raw_processing_ifd.Has(kOlymTagAspectFrame)) {
     std::vector<std::uint32_t> aspect_frame;
     if (raw_processing_ifd.Get(kOlymTagAspectFrame, &aspect_frame) &&
         aspect_frame.size() == 4 && aspect_frame[2] > aspect_frame[0] &&

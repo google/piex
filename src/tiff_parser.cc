@@ -30,13 +30,14 @@ namespace piex {
 namespace {
 
 using tiff_directory::Endian;
+using tiff_directory::kBigEndian;
+using tiff_directory::kLittleEndian;
 using tiff_directory::Rational;
 using tiff_directory::SizeOfType;
+using tiff_directory::TIFF_IFD;
 using tiff_directory::TIFF_TYPE_LONG;
 using tiff_directory::TIFF_TYPE_UNDEFINED;
 using tiff_directory::TiffDirectory;
-using tiff_directory::kBigEndian;
-using tiff_directory::kLittleEndian;
 
 // Specifies all tags that might be of interest to parse JPEG data.
 const std::uint32_t kStartOfFrame = 0xFFC0;
@@ -196,6 +197,9 @@ bool FillPreviewImageData(const TiffDirectory& tiff_directory,
     std::vector<std::uint32_t> cfa_pattern_dim;
     if (tiff_directory.Get(kTiffTagCfaPatternDim, &cfa_pattern_dim) &&
         cfa_pattern_dim.size() == 2) {
+      if (preview_image_data->cfa_pattern_dim.size() < 2) {
+        preview_image_data->cfa_pattern_dim.resize(2);
+      }
       preview_image_data->cfa_pattern_dim[0] = cfa_pattern_dim[0];
       preview_image_data->cfa_pattern_dim[1] = cfa_pattern_dim[1];
     }
@@ -271,8 +275,10 @@ bool ParseSubIfds(const std::uint32_t tiff_offset, const TagSet& desired_tags,
   if (tiff_ifd->Has(kTiffTagSubIfd)) {
     std::uint32_t offset = 0;
     std::uint32_t length = 0;
-    tiff_ifd->GetOffsetAndLength(kTiffTagSubIfd, TIFF_TYPE_LONG, &offset,
-                                 &length);
+    if (!tiff_ifd->GetOffsetAndLength(kTiffTagSubIfd, TIFF_TYPE_LONG, &offset,
+                                      &length)) {
+      tiff_ifd->GetOffsetAndLength(kTiffTagSubIfd, TIFF_IFD, &offset, &length);
+    }
     length /= 4;  // length in bytes divided by 4 gives number of IFDs.
     for (std::uint32_t j = 0; j < length && j < max_number_ifds; ++j) {
       std::uint32_t sub_offset;
